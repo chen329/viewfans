@@ -23,20 +23,22 @@ struct CropEditor: View {
             let side = min(geo.size.width - 40, geo.size.height - 160, 640)
             VStack(spacing: 20) {
                 Spacer(minLength: 0)
-                ZStack(alignment: .topLeading) {
-                    Color(white: 0.1)
-                    if let image {
-                        let l = crop.layout(imageSize: image.size, side: side)
-                        Image(uiImage: image)
-                            .resizable()
-                            .frame(width: l.size.width, height: l.size.height)
-                            .offset(x: l.origin.x, y: l.origin.y)
-                    } else {
-                        ProgressView().frame(width: side, height: side)
+                // 画像は枠より大きいので、枠の大きさを変えない overlay で左上を基準に置く
+                Color(white: 0.1)
+                    .frame(width: side, height: side)
+                    .overlay(alignment: .topLeading) {
+                        if let image {
+                            let l = crop.layout(imageSize: image.size, side: side)
+                            Image(uiImage: image)
+                                .resizable()
+                                .frame(width: l.size.width, height: l.size.height)
+                                .offset(x: l.origin.x, y: l.origin.y)
+                        }
                     }
-                }
-                .frame(width: side, height: side)
-                .clipped()
+                    .overlay {
+                        if image == nil { ProgressView() }
+                    }
+                    .clipped()
                 .overlay(Rectangle().stroke(.white.opacity(0.6), lineWidth: 1))
                 .contentShape(Rectangle())
                 .gesture(drag(side: side).simultaneously(with: magnify))

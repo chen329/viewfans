@@ -102,7 +102,10 @@ struct FolderScreen: View {
         .navigationBarBackButtonHidden(selecting)
         .toolbar { toolbarContent }
         .refreshable { await load() }
-        .task { await load() }
+        .task {
+            dragging = nil
+            await load()
+        }
         .onChange(of: columns) { _, value in
             ColumnStore.set(value, folder: folderID, landscape: landscape)
         }
@@ -255,7 +258,6 @@ struct FolderScreen: View {
                     }
             } else {
                 TileImage(imageId: item.imageId, side: side, crop: Crop(item))
-                    .opacity(dragging?.id == item.id ? 0.3 : 1)
                     .contentShape(Rectangle())
                     .onTapGesture { viewer = ViewerTarget(index: index) }
                     // 長押しでメニュー、長押しのまま指を動かすとドラッグで並べ替え(ホーム画面と同じ操作)

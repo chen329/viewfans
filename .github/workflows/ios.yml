@@ -22,6 +22,10 @@ jobs:
       - run: |
           mkdir Payload
           cp -R build/Build/Products/Release-iphoneos/ViewFans.app Payload/
+          # 署名なしビルドでは権限(App Group)が埋め込まれないので、仮の署名で埋め込む
+          codesign -f -s - --entitlements Share/ViewFansShare.entitlements Payload/ViewFans.app/PlugIns/ViewFansShare.appex
+          codesign -f -s - --entitlements ViewFans.entitlements Payload/ViewFans.app
+          codesign -d --entitlements - Payload/ViewFans.app/PlugIns/ViewFansShare.appex
           zip -r ViewFans.ipa Payload
       - uses: actions/upload-artifact@v4
         with:

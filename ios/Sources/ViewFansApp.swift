@@ -24,7 +24,12 @@ struct ViewFansApp: App {
                 }
             }
             .preferredColorScheme(.dark)
-            .task { await ImageStore.shared.trim() }
+            .task {
+                // M3 の事前確認用: 共有拡張から読めるか試すため、App Group に書き込む
+                UserDefaults(suiteName: "group.com.chen329.viewfans")?
+                    .set("本体が書き込んだ値 \(Date().formatted())", forKey: "probe")
+                await ImageStore.shared.trim()
+            }
         }
     }
 }

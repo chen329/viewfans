@@ -8,6 +8,12 @@ targets:
     type: application
     platform: iOS
     sources: [Sources]
+    entitlements:
+      path: ViewFans.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.chen329.viewfans]
+    dependencies:
+      - target: ViewFansShare
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.chen329.viewfans
@@ -18,5 +24,30 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: "View Fans"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        MARKETING_VERSION: "0.2.0"
-        CURRENT_PROJECT_VERSION: "3"
+        MARKETING_VERSION: "0.2.1"
+        CURRENT_PROJECT_VERSION: "4"
+  ViewFansShare:
+    type: app-extension
+    platform: iOS
+    sources: [Share]
+    entitlements:
+      path: Share/ViewFansShare.entitlements
+      properties:
+        com.apple.security.application-groups: [group.com.chen329.viewfans]
+    info:
+      path: Share/Info.plist
+      properties:
+        CFBundleDisplayName: "View Fans"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.share-services
+          NSExtensionPrincipalClass: ViewFansShare.ShareViewController
+          NSExtensionAttributes:
+            NSExtensionActivationRule:
+              NSExtensionActivationSupportsImageWithMaxCount: 500
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.chen329.viewfans.share
+        TARGETED_DEVICE_FAMILY: "2"
+        SWIFT_VERSION: "5.0"
+        MARKETING_VERSION: "0.2.1"
+        CURRENT_PROJECT_VERSION: "4"

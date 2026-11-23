@@ -1,0 +1,8 @@
+[Unit]
+Description=Update View Fans from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh /opt/viewfans/server/deploy/viewfans-update.sh

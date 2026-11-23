@@ -17,7 +17,7 @@ from . import db, storage
 
 
 def natural_key(s: str):
-    return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", s)]
+    return db.natural_key(s)
 
 
 def plan(root: Path):
@@ -68,6 +68,7 @@ def run(root: Path, workers: int = 4, dry_run: bool = False) -> int:
         return folder_cache[key]
 
     added = dup = failed = 0
+    touched: set[int] = set()
     srcs = [str(p) for _, _, p in entries]
     with ProcessPoolExecutor(max_workers=workers) as ex:
         # 結果は入力順で返るので、並び順(自然順)が保たれる
@@ -80,13 +81,18 @@ def run(root: Path, workers: int = 4, dry_run: bool = False) -> int:
             image_id = img["id"] if img else db.insert_image(
                 conn, res["sha256"], res["ext"], res["width"], res["height"], res["bytes"]
             )
-            if db.add_item(conn, folder_id(parent, child), image_id, path.name) is None:
+            fid = folder_id(parent, child)
+            touched.add(fid)
+            if db.add_item(conn, fid, image_id, path.name, renumber=False) is None:
                 dup += 1
             else:
                 added += 1
             if i % 500 == 0:
                 conn.commit()
                 print(f"  {i}/{len(entries)}")
+    for fid in touched:
+        if conn.execute("SELECT sort_mode FROM folders WHERE id = ?", (fid,)).fetchone()[0] == "name":
+            db.renumber_by_name(conn, fid)
     conn.commit()
     print(f"追加 {added} 件、重複 {dup} 件、失敗 {failed} 件")
     return 1 if failed else 0

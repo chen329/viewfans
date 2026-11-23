@@ -157,6 +157,29 @@ final class API: @unchecked Sendable {
         return try decoder.decode(UploadResult.self, from: data)
     }
 
+    func patchItem(_ id: Int, crop: Crop) async throws {
+        _ = try await send(try request("/api/items/\(id)", method: "PATCH",
+                                       json: ["crop_x": crop.x, "crop_y": crop.y, "crop_zoom": crop.zoom]))
+    }
+
+    func moveItem(_ id: Int, toIndex: Int) async throws -> Folder {
+        let data = try await send(try request("/api/items/\(id)/move", method: "POST", json: ["to_index": toIndex]))
+        return try decoder.decode(Folder.self, from: data)
+    }
+
+    func deleteItems(_ ids: [Int]) async throws {
+        _ = try await send(try request("/api/items/delete", method: "POST", json: ["ids": ids]))
+    }
+
+    func deleteFolder(_ id: Int) async throws {
+        _ = try await send(try request("/api/folders/\(id)", method: "DELETE"))
+    }
+
+    func setSort(_ folder: Int, mode: String) async throws -> Folder {
+        let data = try await send(try request("/api/folders/\(folder)/sort", method: "POST", json: ["mode": mode]))
+        return try decoder.decode(Folder.self, from: data)
+    }
+
     func imageData(_ imageId: Int, variant: ImageVariant) async throws -> Data {
         try await send(try request("/api/images/\(imageId)/\(variant.rawValue)"))
     }

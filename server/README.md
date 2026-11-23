@@ -15,6 +15,11 @@ FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で
 | GET | /api/images/{id}/thumb | サムネイル(長辺 600px の JPEG) |
 | GET | /api/images/{id}/medium | 中間サイズ(長辺 1600px、初回要求時に生成) |
 | GET | /api/images/{id}/original | 元画像 |
+| DELETE | /api/folders/{id} | フォルダを子フォルダごと削除(参照されなくなった画像はファイルごと消す) |
+| POST | /api/folders/{id}/sort | 並び順の切り替え `{"mode": "name"}`(ファイル名順に並べ直す)/ `"manual"` |
+| PATCH | /api/items/{id} | 表示位置 `{"crop_x", "crop_y", "crop_zoom"}` |
+| POST | /api/items/{id}/move | 並べ替え `{"to_index"}`(フォルダは手動並びになる) |
+| POST | /api/items/delete | 画像をフォルダから削除 `{"ids": [...]}`(参照されなくなった画像はファイルごと消す) |
 | PATCH | /api/folders/{id} | 名前変更 `{"name"}`、表紙設定 `{"cover_image_id"}`、表紙を自動に戻す `{"clear_cover": true}` |
 
 ## 管理コマンド

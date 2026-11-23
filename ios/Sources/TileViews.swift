@@ -4,10 +4,11 @@ import SwiftUI
 struct TileImage: View {
     let imageId: Int?
     let side: CGFloat
+    var crop = Crop()
     @Environment(\.displayScale) private var scale
     @State private var image: UIImage?
 
-    private var pixel: Int { Int(side * scale) }
+    private var pixel: Int { Int(side * scale * max(1, crop.zoom)) }
     /// サムネイルは長辺 600px。それより大きく表示するときは中間サイズを使う。
     private var variant: ImageVariant { pixel > 660 ? .medium : .thumb }
     /// メモリ節約のため、表示サイズに合わせて 100px 単位で縮小する。
@@ -20,9 +21,12 @@ struct TileImage: View {
         Color(white: 0.1)
             .overlay {
                 if let image {
+                    let l = crop.layout(imageSize: image.size, side: side)
                     Image(uiImage: image)
                         .resizable()
-                        .scaledToFill()
+                        .frame(width: l.size.width, height: l.size.height)
+                        .offset(x: l.origin.x, y: l.origin.y)
+                        .frame(width: side, height: side, alignment: .topLeading)
                 } else if imageId == nil {
                     Image(systemName: "photo.on.rectangle")
                         .font(.system(size: max(12, side * 0.2)))

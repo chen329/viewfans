@@ -43,6 +43,14 @@ def medium_path(sha: str) -> Path:
     return shard(config.MEDIUM_DIR, sha, "jpg")
 
 
+def remove_files(sha: str, ext: str) -> None:
+    for p in (original_path(sha, ext), thumb_path(sha), medium_path(sha)):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def normalize_ext(name: str) -> str | None:
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     return config.SUPPORTED_EXT.get(ext)

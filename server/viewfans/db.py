@@ -1,4 +1,5 @@
 import hashlib
+import re
 import sqlite3
 from datetime import datetime, timezone
 
@@ -61,15 +62,90 @@ def connect() -> sqlite3.Connection:
     return conn
 
 
+def _add_column(conn, table: str, ddl: str) -> bool:
+    """列がなければ追加する。追加したら True(別のワーカーが先に追加していたら False)。"""
+    name = ddl.split()[0]
+    cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    if name in cols:
+        return False
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+        return True
+    except sqlite3.OperationalError:
+        return False
+
+
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    cols = {r["name"] for r in conn.execute("PRAGMA table_info(folders)")}
-    if "cover_image_id" not in cols:
-        try:
-            conn.execute("ALTER TABLE folders ADD COLUMN cover_image_id INTEGER REFERENCES images(id) ON DELETE SET NULL")
-        except sqlite3.OperationalError:  # 別のワーカーが先に追加した場合
-            pass
+    _add_column(conn, "folders", "cover_image_id INTEGER REFERENCES images(id) ON DELETE SET NULL")
+    _add_column(conn, "items", "crop_zoom REAL NOT NULL DEFAULT 1.0")
+    if _add_column(conn, "folders", "sort_mode TEXT NOT NULL DEFAULT 'name'"):
+        # 初回だけ、全フォルダをファイル名順に並べ直す
+        for r in conn.execute("SELECT id FROM folders").fetchall():
+            renumber_by_name(conn, r["id"])
     conn.commit()
+
+
+def natural_key(s: str | None):
+    if s is None:
+        return [[1]]
+    return [[0], *[(0, int(t)) if t.isdigit() else (1, t.lower()) for t in re.split(r"(\d+)", s) if t != ""]]
+
+
+def renumber_by_name(conn, folder_id: int) -> None:
+    rows = conn.execute("SELECT id, original_name FROM items WHERE folder_id = ?", (folder_id,)).fetchall()
+    rows.sort(key=lambda r: (natural_key(r["original_name"]), r["id"]))
+    conn.executemany("UPDATE items SET position = ? WHERE id = ?", [(i, r["id"]) for i, r in enumerate(rows)])
+
+
+def set_sort_mode(conn, folder_id: int, mode: str) -> None:
+    conn.execute("UPDATE folders SET sort_mode = ? WHERE id = ?", (mode, folder_id))
+    if mode == "name":
+        renumber_by_name(conn, folder_id)
+
+
+def move_item(conn, item_id: int, to_index: int) -> int:
+    """フォルダ内で並び順を移動し、フォルダを手動並びに切り替える。フォルダ ID を返す。"""
+    row = conn.execute("SELECT folder_id FROM items WHERE id = ?", (item_id,)).fetchone()
+    if row is None:
+        raise FolderError("画像がありません")
+    fid = row["folder_id"]
+    ids = [r["id"] for r in conn.execute("SELECT id FROM items WHERE folder_id = ? ORDER BY position, id", (fid,))]
+    ids.remove(item_id)
+    to_index = max(0, min(to_index, len(ids)))
+    ids.insert(to_index, item_id)
+    conn.executemany("UPDATE items SET position = ? WHERE id = ?", [(i, x) for i, x in enumerate(ids)])
+    conn.execute("UPDATE folders SET sort_mode = 'manual' WHERE id = ?", (fid,))
+    return fid
+
+
+def delete_items(conn, item_ids: list[int]) -> list[int]:
+    """フォルダから外す。どのフォルダからも参照されなくなった画像の ID を返す。"""
+    if not item_ids:
+        return []
+    marks = ",".join("?" * len(item_ids))
+    image_ids = [r[0] for r in conn.execute(f"SELECT DISTINCT image_id FROM items WHERE id IN ({marks})", item_ids)]
+    conn.execute(f"DELETE FROM items WHERE id IN ({marks})", item_ids)
+    return unreferenced(conn, image_ids)
+
+
+def delete_folder(conn, folder_id: int) -> list[int]:
+    """フォルダと子フォルダを消す。どこからも参照されなくなった画像の ID を返す。"""
+    image_ids = [r[0] for r in conn.execute(
+        """SELECT DISTINCT image_id FROM items WHERE folder_id = ?
+           OR folder_id IN (SELECT id FROM folders WHERE parent_id = ?)""",
+        (folder_id, folder_id),
+    )]
+    conn.execute("DELETE FROM items WHERE folder_id IN (SELECT id FROM folders WHERE parent_id = ?)", (folder_id,))
+    conn.execute("DELETE FROM items WHERE folder_id = ?", (folder_id,))
+    conn.execute("DELETE FROM folders WHERE parent_id = ?", (folder_id,))
+    conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
+    return unreferenced(conn, image_ids)
+
+
+def unreferenced(conn, image_ids: list[int]) -> list[int]:
+    return [i for i in image_ids
+            if conn.execute("SELECT 1 FROM items WHERE image_id = ? LIMIT 1", (i,)).fetchone() is None]
 
 
 # ---- folders ----
@@ -150,8 +226,9 @@ def insert_image(conn, sha256: str, ext: str, width: int, height: int, size: int
     return cur.lastrowid
 
 
-def add_item(conn, folder_id: int, image_id: int, original_name: str | None) -> int | None:
-    """フォルダの末尾に追加する。同じ画像がすでにあれば None。"""
+def add_item(conn, folder_id: int, image_id: int, original_name: str | None, renumber: bool = True) -> int | None:
+    """フォルダに追加する。ファイル名順のフォルダでは名前の位置に、手動並びのフォルダでは末尾に入る。
+    同じ画像がすでにあれば None。renumber=False なら並べ直しは呼び出し側でまとめて行う。"""
     exists = conn.execute(
         "SELECT id FROM items WHERE folder_id = ? AND image_id = ?", (folder_id, image_id)
     ).fetchone()
@@ -164,6 +241,10 @@ def add_item(conn, folder_id: int, image_id: int, original_name: str | None) -> 
         "INSERT INTO items(folder_id, image_id, position, original_name, created_at) VALUES (?, ?, ?, ?, ?)",
         (folder_id, image_id, pos, original_name, now()),
     )
+    if renumber:
+        mode = conn.execute("SELECT sort_mode FROM folders WHERE id = ?", (folder_id,)).fetchone()
+        if mode is not None and mode[0] == "name":
+            renumber_by_name(conn, folder_id)
     return cur.lastrowid
 
 

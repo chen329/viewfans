@@ -59,6 +59,7 @@ def folder_dict(c, row) -> dict:
         "child_count": children,
         "cover_image_id": cover[0] if cover else None,
         "cover_is_custom": row["cover_image_id"] is not None,
+        "sort_mode": row["sort_mode"],
     }
 
 
@@ -73,6 +74,7 @@ def list_folders(parent_id: int | None = None, c=Depends(conn)):
         rows = c.execute("SELECT * FROM folders WHERE parent_id IS NULL ORDER BY position").fetchall()
     else:
         rows = c.execute("SELECT * FROM folders WHERE parent_id = ? ORDER BY position", (parent_id,)).fetchall()
+    rows = sorted(rows, key=lambda r: (db.natural_key(r["name"]), r["id"]))
     return [folder_dict(c, r) for r in rows]
 
 
@@ -123,6 +125,89 @@ def patch_folder(folder_id: int, body: FolderPatch, c=Depends(conn)):
     return get_folder(folder_id, c)
 
 
+@app.delete("/api/folders/{folder_id}", dependencies=[Depends(auth)])
+def delete_folder(folder_id: int, c=Depends(conn)):
+    if c.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone() is None:
+        raise HTTPException(404, "フォルダがありません")
+    gone = db.delete_folder(c, folder_id)
+    removed = _purge_images(c, gone)
+    c.commit()
+    return {"deleted_images": removed}
+
+
+class SortBody(BaseModel):
+    mode: str
+
+
+@app.post("/api/folders/{folder_id}/sort", dependencies=[Depends(auth)])
+def sort_folder(folder_id: int, body: SortBody, c=Depends(conn)):
+    if body.mode not in ("name", "manual"):
+        raise HTTPException(400, "mode は name か manual です")
+    if c.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone() is None:
+        raise HTTPException(404, "フォルダがありません")
+    db.set_sort_mode(c, folder_id, body.mode)
+    c.commit()
+    return get_folder(folder_id, c)
+
+
+class ItemPatch(BaseModel):
+    crop_x: float | None = None
+    crop_y: float | None = None
+    crop_zoom: float | None = None
+
+
+@app.patch("/api/items/{item_id}", dependencies=[Depends(auth)])
+def patch_item(item_id: int, body: ItemPatch, c=Depends(conn)):
+    if c.execute("SELECT 1 FROM items WHERE id = ?", (item_id,)).fetchone() is None:
+        raise HTTPException(404, "画像がありません")
+    if body.crop_x is not None:
+        c.execute("UPDATE items SET crop_x = ? WHERE id = ?", (min(max(body.crop_x, 0.0), 1.0), item_id))
+    if body.crop_y is not None:
+        c.execute("UPDATE items SET crop_y = ? WHERE id = ?", (min(max(body.crop_y, 0.0), 1.0), item_id))
+    if body.crop_zoom is not None:
+        c.execute("UPDATE items SET crop_zoom = ? WHERE id = ?", (min(max(body.crop_zoom, 1.0), 8.0), item_id))
+    c.commit()
+    return {"ok": True}
+
+
+class MoveBody(BaseModel):
+    to_index: int
+
+
+@app.post("/api/items/{item_id}/move", dependencies=[Depends(auth)])
+def move_item(item_id: int, body: MoveBody, c=Depends(conn)):
+    try:
+        fid = db.move_item(c, item_id, body.to_index)
+    except db.FolderError as e:
+        raise HTTPException(404, str(e))
+    c.commit()
+    return get_folder(fid, c)
+
+
+class DeleteItems(BaseModel):
+    ids: list[int]
+
+
+@app.post("/api/items/delete", dependencies=[Depends(auth)])
+def delete_items(body: DeleteItems, c=Depends(conn)):
+    gone = db.delete_items(c, body.ids)
+    removed = _purge_images(c, gone)
+    c.commit()
+    return {"deleted_images": removed}
+
+
+def _purge_images(c, image_ids: list[int]) -> int:
+    """どこからも参照されない画像を、ファイルごと完全に消す。"""
+    for iid in image_ids:
+        row = c.execute("SELECT sha256, ext FROM images WHERE id = ?", (iid,)).fetchone()
+        if row is None:
+            continue
+        c.execute("UPDATE folders SET cover_image_id = NULL WHERE cover_image_id = ?", (iid,))
+        c.execute("DELETE FROM images WHERE id = ?", (iid,))
+        storage.remove_files(row["sha256"], row["ext"])
+    return len(image_ids)
+
+
 @app.get("/api/folders/{folder_id}/items", dependencies=[Depends(auth)])
 def list_items(
     folder_id: int,
@@ -132,8 +217,8 @@ def list_items(
 ):
     total = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ?", (folder_id,)).fetchone()[0]
     rows = c.execute(
-        """SELECT it.id, it.image_id, it.position, it.crop_x, it.crop_y,
-                  im.width, im.height, im.ext
+        """SELECT it.id, it.image_id, it.position, it.crop_x, it.crop_y, it.crop_zoom,
+                  it.original_name, im.width, im.height, im.ext
            FROM items it JOIN images im ON im.id = it.image_id
            WHERE it.folder_id = ? ORDER BY it.position LIMIT ? OFFSET ?""",
         (folder_id, limit, offset),

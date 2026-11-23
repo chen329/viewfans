@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct ViewFansApp: App {
     @Environment(\.scenePhase) private var phase
+    @State private var lock = AppLock.shared
     @State private var configured = API.shared.isConfigured
 
     var body: some Scene {
@@ -17,6 +18,9 @@ struct ViewFansApp: App {
                         }
                     }
                 }
+                if configured && lock.locked {
+                    LockScreen()
+                }
                 // アプリスイッチャーや通知センター表示中は中身を隠す
                 if phase != .active {
                     Color.black.ignoresSafeArea()
@@ -25,6 +29,10 @@ struct ViewFansApp: App {
             }
             .preferredColorScheme(.dark)
             .task { await ImageStore.shared.trim() }
+            .onChange(of: phase) { _, p in
+                if p == .background { lock.didEnterBackground() }
+                if p == .active { lock.didBecomeActive() }
+            }
         }
     }
 }

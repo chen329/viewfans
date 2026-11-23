@@ -225,26 +225,32 @@ final class API: @unchecked Sendable {
 }
 
 enum Keychain {
-    private static let base: [String: Any] = [
-        kSecClass as String: kSecClassGenericPassword,
-        kSecAttrService as String: "com.chen329.viewfans",
-        kSecAttrAccount as String: "token",
-    ]
+    private static func base(_ account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: "com.chen329.viewfans",
+            kSecAttrAccount as String: account,
+        ]
+    }
 
-    static func save(_ value: String) {
-        SecItemDelete(base as CFDictionary)
-        var attrs = base
+    static func save(_ value: String, account: String = "token") {
+        SecItemDelete(base(account) as CFDictionary)
+        var attrs = base(account)
         attrs[kSecValueData as String] = Data(value.utf8)
         attrs[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(attrs as CFDictionary, nil)
     }
 
-    static func load() -> String? {
-        var q = base
+    static func load(account: String = "token") -> String? {
+        var q = base(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var out: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
         return String(data: data, encoding: .utf8)
+    }
+
+    static func delete(account: String) {
+        SecItemDelete(base(account) as CFDictionary)
     }
 }

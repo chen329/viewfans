@@ -1,9 +1,13 @@
+import os
 import shutil
 import tempfile
+import zipfile
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Response, UploadFile
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from starlette.background import BackgroundTask
 from pydantic import BaseModel
 
 from . import config, db, storage
@@ -23,10 +27,19 @@ def conn():
         c.close()
 
 
-def auth(authorization: str | None = Header(default=None), c=Depends(conn)):
-    if not authorization or not authorization.startswith("Bearer "):
+COOKIE = "vf_token"
+
+
+def auth(authorization: str | None = Header(default=None), vf_token: str | None = Cookie(default=None),
+         c=Depends(conn)):
+    """アプリは Authorization ヘッダー、Web 版はログイン時に発行する Cookie でトークンを渡す。"""
+    if authorization and authorization.startswith("Bearer "):
+        token = authorization[7:]
+    else:
+        token = vf_token
+    if not token:
         raise HTTPException(401, "トークンがありません")
-    if not db.check_token(c, authorization[7:]):
+    if not db.check_token(c, token):
         raise HTTPException(401, "トークンが無効です")
 
 
@@ -424,3 +437,76 @@ def upload(folder_id: int, file: UploadFile = File(...), c=Depends(conn)):
     item_id = db.add_item(c, folder_id, image_id, name)
     c.commit()
     return {"image_id": image_id, "item_id": item_id, "duplicate": item_id is None}
+
+
+# ---- Web 版 ----
+
+class LoginBody(BaseModel):
+    token: str
+
+
+@app.post("/api/login")
+def login(body: LoginBody, response: Response, c=Depends(conn)):
+    if not db.check_token(c, body.token.strip()):
+        raise HTTPException(401, "トークンが無効です")
+    response.set_cookie(COOKIE, body.token.strip(), max_age=365 * 24 * 3600,
+                        httponly=True, secure=True, samesite="strict")
+    return {"ok": True}
+
+
+@app.post("/api/logout")
+def logout(response: Response):
+    response.delete_cookie(COOKIE)
+    return {"ok": True}
+
+
+def _download_name(row) -> str:
+    name = row["original_name"]
+    if not name or storage.normalize_ext(name) is None:
+        name = f"{row['sha256'][:12]}.{row['ext']}"
+    return name
+
+
+@app.get("/api/items/{item_id}/download", dependencies=[Depends(auth)])
+def download_item(item_id: int, c=Depends(conn)):
+    row = c.execute(
+        """SELECT it.original_name, im.sha256, im.ext FROM items it JOIN images im ON im.id = it.image_id
+           WHERE it.id = ?""", (item_id,)).fetchone()
+    if row is None:
+        raise HTTPException(404, "画像がありません")
+    return FileResponse(storage.original_path(row["sha256"], row["ext"]),
+                        media_type=config.MEDIA_TYPES[row["ext"]], filename=_download_name(row))
+
+
+@app.post("/api/items/zip", dependencies=[Depends(auth)])
+def zip_items(ids: str = Form(...), name: str = Form("viewfans"), c=Depends(conn)):
+    """選択した画像を zip にまとめてダウンロードさせる(画像は圧縮済みなので無圧縮で格納)。"""
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not id_list:
+        raise HTTPException(400, "画像が選ばれていません")
+    marks = ",".join("?" * len(id_list))
+    rows = c.execute(
+        f"""SELECT it.original_name, im.sha256, im.ext FROM items it JOIN images im ON im.id = it.image_id
+            WHERE it.id IN ({marks}) ORDER BY it.position""", id_list).fetchall()
+    tmp_dir = config.DATA_DIR / "tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=tmp_dir, suffix=".zip")
+    os.close(fd)
+    used: set[str] = set()
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_STORED) as z:
+        for r in rows:
+            arc = _download_name(r)
+            stem, dot, ext = arc.rpartition(".")
+            n = 1
+            while arc in used:
+                n += 1
+                arc = f"{stem} ({n}){dot}{ext}"
+            used.add(arc)
+            z.write(storage.original_path(r["sha256"], r["ext"]), arc)
+    safe = "".join(ch for ch in name if ch not in '\\/:*?"<>|').strip() or "viewfans"
+    return FileResponse(tmp, media_type="application/zip", filename=f"{safe}.zip",
+                        background=BackgroundTask(os.unlink, tmp))
+
+
+# Web 版の画面(API 以外のパスはすべてここ)。必ず最後に置く
+app.mount("/", StaticFiles(directory=Path(__file__).parent / "web", html=True), name="web")

@@ -19,3 +19,6 @@ viewfans = "viewfans.cli:main"
 
 [tool.setuptools]
 packages = ["viewfans"]
+
+[tool.setuptools.package-data]
+viewfans = ["web/*"]

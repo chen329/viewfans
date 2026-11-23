@@ -1,0 +1,54 @@
+:root { color-scheme: dark; --cols: 5; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #000; color: #eee; font-family: -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif; }
+button, .button { background: #222; color: #eee; border: 0; border-radius: 8px; padding: 6px 12px; font-size: 14px; cursor: pointer; text-decoration: none; }
+button:hover, .button:hover { background: #333; }
+button.icon { padding: 4px 10px; font-size: 20px; line-height: 1; }
+button:disabled { opacity: .4; cursor: default; }
+[hidden] { display: none !important; }
+
+#login { display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+#login form { display: flex; flex-direction: column; gap: 12px; width: min(320px, 90vw); }
+#login h1 { font-weight: 600; text-align: center; }
+#login input { background: #111; color: #eee; border: 1px solid #333; border-radius: 8px; padding: 10px; font-size: 16px; }
+.error { color: #f66; min-height: 1em; font-size: 13px; }
+
+header { position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 8px;
+         padding: calc(env(safe-area-inset-top) + 6px) 8px 6px; background: rgba(0,0,0,.85); backdrop-filter: blur(10px); }
+header h1 { flex: 1; margin: 0; font-size: 16px; font-weight: 600; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tools { display: flex; align-items: center; gap: 6px; }
+.cols { display: flex; align-items: center; gap: 2px; }
+.cols input { width: 110px; }
+#selectbar { position: sticky; top: 48px; z-index: 4; display: flex; gap: 8px; align-items: center; padding: 6px 8px; background: #111; }
+#sel-count { flex: 1; font-size: 14px; }
+#progress { position: sticky; top: 48px; z-index: 4; height: 22px; background: #111; }
+#progress-bar { height: 100%; width: 0; background: #2a6; transition: width .2s; }
+#progress-text { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 22px; }
+
+#grid { display: grid; grid-template-columns: repeat(var(--cols), 1fr); gap: 1px; }
+.tile { position: relative; aspect-ratio: 1; overflow: hidden; background: #1a1a1a; cursor: pointer; }
+.tile img { position: absolute; display: block; max-width: none; user-select: none; -webkit-user-drag: none; }
+.tile.folder::after { content: ""; position: absolute; inset: 50% 0 0; background: linear-gradient(transparent, rgba(0,0,0,.8)); }
+.tile .label { position: absolute; left: 6%; right: 6%; bottom: 6%; z-index: 1; font-size: clamp(10px, calc(60vw / var(--cols) / 8), 18px); }
+.tile .label b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .label span { color: #aaa; font-size: .8em; }
+.tile .check { position: absolute; right: 4px; bottom: 4px; z-index: 2; width: 22px; height: 22px; border-radius: 50%;
+               border: 2px solid #fff; background: rgba(0,0,0,.3); display: none; }
+.selecting .tile.image .check { display: block; }
+.tile.selected .check { background: #3478f6; }
+.tile.selected::before { content: ""; position: absolute; inset: 0; z-index: 1; background: rgba(255,255,255,.15); }
+#empty { text-align: center; color: #888; margin-top: 30vh; }
+#drop { position: fixed; inset: 0; z-index: 20; display: flex; align-items: center; justify-content: center;
+        background: rgba(20,60,120,.6); font-size: 24px; border: 3px dashed #8bf; }
+
+#viewer { position: fixed; inset: 0; z-index: 30; background: #000; display: flex; align-items: center; justify-content: center; touch-action: pan-y pinch-zoom; }
+#viewer-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.viewer-bar { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; justify-content: space-between;
+              padding: calc(env(safe-area-inset-top) + 8px) 12px 8px; background: linear-gradient(rgba(0,0,0,.6), transparent); }
+#viewer .nav { position: absolute; top: 50%; transform: translateY(-50%); font-size: 32px; background: rgba(0,0,0,.4); }
+#v-prev { left: 8px; } #v-next { right: 8px; }
+@media (max-width: 600px) {
+  .cols input { width: 70px; }
+  #upload-btn, #logout { font-size: 12px; padding: 6px 8px; }
+  #viewer .nav { display: none; }
+}

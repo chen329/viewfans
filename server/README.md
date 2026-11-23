@@ -1,6 +1,6 @@
 # View Fans server
 
-FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で変更可)。
+FastAPI + SQLite。`/` で Web 版(viewfans/web)を配信し、API は Authorization ヘッダーか Web 版の Cookie で認証する。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で変更可)。
 
 ## API(`/api/health` 以外は `Authorization: Bearer <トークン>` が必要)
 
@@ -26,6 +26,10 @@ FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で
 | POST | /api/trash/empty | 最近削除した項目をすべて完全に削除 |
 | POST | /api/items/move-to | 画像を別のフォルダへ移動 `{"ids": [], "folder_id"}` |
 | POST | /api/folders/{id}/move-to | フォルダを移動 `{"parent_id": null}`(2段まで) |
+| POST | /api/login | Web 版のログイン `{"token"}`(Cookie を発行) |
+| POST | /api/logout | Web 版のログアウト |
+| GET | /api/items/{id}/download | 元画像を元のファイル名でダウンロード |
+| POST | /api/items/zip | 選択した画像を zip でダウンロード(フォーム `ids=1,2,3`、`name`) |
 | GET | /api/stats | 枚数・フォルダ数・ディスク使用量 |
 | POST | /api/folders/{id}/move | フォルダの並べ替え `{"to_index"}`(同じ階層は手動並びになる) |
 | POST | /api/folders/sort-children | フォルダの並びを名前順に戻す `{"parent_id": null, "mode": "name"}` |

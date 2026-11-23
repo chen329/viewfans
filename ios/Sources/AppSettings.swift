@@ -57,6 +57,13 @@ struct AppSettingsView: View {
                     }
                 }
             }
+            Section("セキュリティ") {
+                NavigationLink {
+                    LockSettingsView()
+                } label: {
+                    LabeledContent("ロック", value: AppLock.shared.isEnabled ? "PIN" : "オフ")
+                }
+            }
             Section("情報") {
                 LabeledContent("バージョン", value: "\(version)(\(build))")
                 NavigationLink("変更履歴") { ChangelogView() }
@@ -93,6 +100,10 @@ struct ChangelogView: View {
     }
 
     static let entries: [Entry] = [
+        Entry(version: "0.7.0", date: "2026-11-23", notes: [
+            "PIN による起動時ロック(求めるタイミングは設定 → ロックで変更)",
+            "アプリのアイコン",
+        ]),
         Entry(version: "0.6.0", date: "2026-11-23", notes: [
             "最近削除した項目(30日後に完全に削除、復元・完全に削除)",
             "選択モードでスワイプしてまとめて選択",

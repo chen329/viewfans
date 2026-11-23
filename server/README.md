@@ -20,7 +20,9 @@ FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で
 | PATCH | /api/items/{id} | 表示位置 `{"crop_x", "crop_y", "crop_zoom"}` |
 | POST | /api/items/{id}/move | 並べ替え `{"to_index"}`(フォルダは手動並びになる) |
 | POST | /api/items/delete | 画像をフォルダから削除 `{"ids": [...]}`(参照されなくなった画像はファイルごと消す) |
-| PATCH | /api/folders/{id} | 名前変更 `{"name"}`、表紙設定 `{"cover_image_id"}`、表紙を自動に戻す `{"clear_cover": true}` |
+| POST | /api/folders/{id}/move | フォルダの並べ替え `{"to_index"}`(同じ階層は手動並びになる) |
+| POST | /api/folders/sort-children | フォルダの並びを名前順に戻す `{"parent_id": null, "mode": "name"}` |
+| PATCH | /api/folders/{id} | 名前変更 `{"name"}`、表紙設定 `{"cover_image_id"}`、表紙を自動に戻す `{"clear_cover": true}`、表紙の表示位置 `{"cover_crop_x", "cover_crop_y", "cover_crop_zoom"}` |
 
 ## 管理コマンド
 

@@ -38,6 +38,11 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE INDEX IF NOT EXISTS items_folder ON items(folder_id, position);
 
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS tokens (
     id           INTEGER PRIMARY KEY,
     name         TEXT NOT NULL,
@@ -79,6 +84,9 @@ def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     _add_column(conn, "folders", "cover_image_id INTEGER REFERENCES images(id) ON DELETE SET NULL")
     _add_column(conn, "items", "crop_zoom REAL NOT NULL DEFAULT 1.0")
+    _add_column(conn, "folders", "cover_crop_x REAL NOT NULL DEFAULT 0.5")
+    _add_column(conn, "folders", "cover_crop_y REAL NOT NULL DEFAULT 0.5")
+    _add_column(conn, "folders", "cover_crop_zoom REAL NOT NULL DEFAULT 1.0")
     if _add_column(conn, "folders", "sort_mode TEXT NOT NULL DEFAULT 'name'"):
         # 初回だけ、全フォルダをファイル名順に並べ直す
         for r in conn.execute("SELECT id FROM folders").fetchall():
@@ -102,6 +110,46 @@ def set_sort_mode(conn, folder_id: int, mode: str) -> None:
     conn.execute("UPDATE folders SET sort_mode = ? WHERE id = ?", (mode, folder_id))
     if mode == "name":
         renumber_by_name(conn, folder_id)
+
+
+def _folder_sort_key(parent_id: int | None) -> str:
+    return f"folder_sort:{'root' if parent_id is None else parent_id}"
+
+
+def folder_sort_mode(conn, parent_id: int | None) -> str:
+    row = conn.execute("SELECT value FROM settings WHERE key = ?", (_folder_sort_key(parent_id),)).fetchone()
+    return row["value"] if row else "name"
+
+
+def set_folder_sort_mode(conn, parent_id: int | None, mode: str) -> None:
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (_folder_sort_key(parent_id), mode),
+    )
+
+
+def ordered_folders(conn, parent_id: int | None) -> list:
+    """フォルダの並び。初期状態は名前順、並べ替えたあとは手動の並び。"""
+    if parent_id is None:
+        rows = conn.execute("SELECT * FROM folders WHERE parent_id IS NULL").fetchall()
+    else:
+        rows = conn.execute("SELECT * FROM folders WHERE parent_id = ?", (parent_id,)).fetchall()
+    if folder_sort_mode(conn, parent_id) == "name":
+        return sorted(rows, key=lambda r: (natural_key(r["name"]), r["id"]))
+    return sorted(rows, key=lambda r: (r["position"], natural_key(r["name"]), r["id"]))
+
+
+def move_folder(conn, folder_id: int, to_index: int) -> None:
+    row = conn.execute("SELECT parent_id FROM folders WHERE id = ?", (folder_id,)).fetchone()
+    if row is None:
+        raise FolderError("フォルダがありません")
+    parent = row["parent_id"]
+    ids = [r["id"] for r in ordered_folders(conn, parent)]
+    ids.remove(folder_id)
+    to_index = max(0, min(to_index, len(ids)))
+    ids.insert(to_index, folder_id)
+    conn.executemany("UPDATE folders SET position = ? WHERE id = ?", [(i, x) for i, x in enumerate(ids)])
+    set_folder_sort_mode(conn, parent, "manual")
 
 
 def move_item(conn, item_id: int, to_index: int) -> int:

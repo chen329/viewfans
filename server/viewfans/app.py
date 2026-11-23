@@ -60,6 +60,10 @@ def folder_dict(c, row) -> dict:
         "cover_image_id": cover[0] if cover else None,
         "cover_is_custom": row["cover_image_id"] is not None,
         "sort_mode": row["sort_mode"],
+        "child_sort_mode": db.folder_sort_mode(c, fid),
+        "cover_crop_x": row["cover_crop_x"],
+        "cover_crop_y": row["cover_crop_y"],
+        "cover_crop_zoom": row["cover_crop_zoom"],
     }
 
 
@@ -68,14 +72,37 @@ def health():
     return {"ok": True}
 
 
+class MoveBody(BaseModel):
+    to_index: int
+
+
 @app.get("/api/folders", dependencies=[Depends(auth)])
 def list_folders(parent_id: int | None = None, c=Depends(conn)):
-    if parent_id is None:
-        rows = c.execute("SELECT * FROM folders WHERE parent_id IS NULL ORDER BY position").fetchall()
-    else:
-        rows = c.execute("SELECT * FROM folders WHERE parent_id = ? ORDER BY position", (parent_id,)).fetchall()
-    rows = sorted(rows, key=lambda r: (db.natural_key(r["name"]), r["id"]))
-    return [folder_dict(c, r) for r in rows]
+    return [folder_dict(c, r) for r in db.ordered_folders(c, parent_id)]
+
+
+class FolderSortBody(BaseModel):
+    parent_id: int | None = None
+    mode: str
+
+
+@app.post("/api/folders/sort-children", dependencies=[Depends(auth)])
+def sort_children(body: FolderSortBody, c=Depends(conn)):
+    if body.mode not in ("name", "manual"):
+        raise HTTPException(400, "mode は name か manual です")
+    db.set_folder_sort_mode(c, body.parent_id, body.mode)
+    c.commit()
+    return list_folders(body.parent_id, c)
+
+
+@app.post("/api/folders/{folder_id}/move", dependencies=[Depends(auth)])
+def move_folder(folder_id: int, body: MoveBody, c=Depends(conn)):
+    try:
+        db.move_folder(c, folder_id, body.to_index)
+    except db.FolderError as e:
+        raise HTTPException(404, str(e))
+    c.commit()
+    return {"ok": True}
 
 
 @app.get("/api/folders/{folder_id}", dependencies=[Depends(auth)])
@@ -105,6 +132,9 @@ class FolderPatch(BaseModel):
     name: str | None = None
     cover_image_id: int | None = None
     clear_cover: bool = False
+    cover_crop_x: float | None = None
+    cover_crop_y: float | None = None
+    cover_crop_zoom: float | None = None
 
 
 @app.patch("/api/folders/{folder_id}", dependencies=[Depends(auth)])
@@ -116,11 +146,18 @@ def patch_folder(folder_id: int, body: FolderPatch, c=Depends(conn)):
             db.rename_folder(c, folder_id, body.name)
     except db.FolderError as e:
         raise HTTPException(400, str(e))
+    reset_crop = "cover_crop_x = 0.5, cover_crop_y = 0.5, cover_crop_zoom = 1.0"
     if body.clear_cover:
-        c.execute("UPDATE folders SET cover_image_id = NULL WHERE id = ?", (folder_id,))
+        c.execute(f"UPDATE folders SET cover_image_id = NULL, {reset_crop} WHERE id = ?", (folder_id,))
     elif body.cover_image_id is not None:
         _image(c, body.cover_image_id)
-        c.execute("UPDATE folders SET cover_image_id = ? WHERE id = ?", (body.cover_image_id, folder_id))
+        c.execute(f"UPDATE folders SET cover_image_id = ?, {reset_crop} WHERE id = ?", (body.cover_image_id, folder_id))
+    if body.cover_crop_x is not None:
+        c.execute("UPDATE folders SET cover_crop_x = ? WHERE id = ?", (min(max(body.cover_crop_x, 0.0), 1.0), folder_id))
+    if body.cover_crop_y is not None:
+        c.execute("UPDATE folders SET cover_crop_y = ? WHERE id = ?", (min(max(body.cover_crop_y, 0.0), 1.0), folder_id))
+    if body.cover_crop_zoom is not None:
+        c.execute("UPDATE folders SET cover_crop_zoom = ? WHERE id = ?", (min(max(body.cover_crop_zoom, 1.0), 8.0), folder_id))
     c.commit()
     return get_folder(folder_id, c)
 
@@ -168,10 +205,6 @@ def patch_item(item_id: int, body: ItemPatch, c=Depends(conn)):
         c.execute("UPDATE items SET crop_zoom = ? WHERE id = ?", (min(max(body.crop_zoom, 1.0), 8.0), item_id))
     c.commit()
     return {"ok": True}
-
-
-class MoveBody(BaseModel):
-    to_index: int
 
 
 @app.post("/api/items/{item_id}/move", dependencies=[Depends(auth)])

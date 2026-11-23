@@ -7,6 +7,29 @@ struct ViewerTarget: Identifiable {
     let index: Int
 }
 
+/// 表示位置の調整の対象。
+enum CropTarget: Identifiable {
+    case item(Item)
+    case folder(Folder)
+
+    var id: String {
+        switch self {
+        case .item(let it): return "i\(it.id)"
+        case .folder(let f): return "f\(f.id)"
+        }
+    }
+}
+
+/// ドラッグが終わる(置く・取り消す)と破棄される。破棄のタイミングでドラッグ終了を知るために使う。
+final class DragEndProvider: NSItemProvider {
+    var onEnd: (() -> Void)?
+
+    deinit {
+        let f = onEnd
+        DispatchQueue.main.async { f?() }
+    }
+}
+
 /// 削除の確認で使う対象。
 enum DeleteTarget: Identifiable {
     case items([Int])
@@ -43,8 +66,10 @@ struct FolderScreen: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var uploadJob: UploadJob?
 
-    @State private var dragging: Item?
-    @State private var cropTarget: Item?
+    @State private var draggingItem: Item?
+    @State private var draggingFolder: Folder?
+    @State private var dragStartIndex: Int?
+    @State private var cropTarget: CropTarget?
     @State private var selecting = false
     @State private var selected: Set<Int> = []
     @State private var deleteTarget: DeleteTarget?
@@ -78,7 +103,7 @@ struct FolderScreen: View {
                     }
                     .scrollTargetLayout()
                     // マスの外で指を離したときも、その時点の並びで確定する
-                    .onDrop(of: [.text], delegate: ReorderDropDelegate(target: nil, items: $items, dragging: $dragging, onCommit: commitMove))
+                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: nil, list: $items, dragging: $draggingItem, onDrop: finishDrag))
                 }
                 .scrollPosition(id: $topID, anchor: .top)
                 .simultaneousGesture(pinch)
@@ -103,7 +128,8 @@ struct FolderScreen: View {
         .toolbar { toolbarContent }
         .refreshable { await load() }
         .task {
-            dragging = nil
+            draggingItem = nil
+            draggingFolder = nil
             await load()
         }
         .onChange(of: columns) { _, value in
@@ -135,16 +161,8 @@ struct FolderScreen: View {
                 UploadProgressView(job: job, deleteFromPhotos: PhotoImport.deleteFromLibrary) { uploadJob = nil }
             }
         }
-        .sheet(item: $cropTarget) { item in
-            NavigationStack {
-                CropEditor(item: item) { crop in
-                    if let i = items.firstIndex(where: { $0.id == item.id }) {
-                        items[i].cropX = crop.x
-                        items[i].cropY = crop.y
-                        items[i].cropZoom = crop.zoom
-                    }
-                }
-            }
+        .sheet(item: $cropTarget) { target in
+            NavigationStack { cropEditor(target) }
         }
         .sheet(isPresented: $showConnection) {
             NavigationStack {
@@ -201,7 +219,10 @@ struct FolderScreen: View {
                         Button("選択", systemImage: "checkmark.circle") { selecting = true }
                     }
                     if current?.sortMode == "manual" {
-                        Button("ファイル名順に並べ直す", systemImage: "textformat.123") { Task { await sortByName() } }
+                        Button("画像をファイル名順に並べ直す", systemImage: "textformat.123") { Task { await sortByName() } }
+                    }
+                    if folders.count > 1 && (folder == nil || current?.childSortMode == "manual") {
+                        Button("フォルダを名前順に並べ直す", systemImage: "folder") { Task { await sortFoldersByName() } }
                     }
                     if folder != nil {
                         Button("フォルダの設定", systemImage: "folder.badge.gearshape") { showFolderSettings = true }
@@ -231,15 +252,11 @@ struct FolderScreen: View {
             }
             .buttonStyle(.plain)
             .disabled(selecting)
-            .opacity(selecting ? 0.4 : 1)
-            .contextMenu {
-                if f.coverIsCustom == true {
-                    Button("表紙を自動に戻す", systemImage: "arrow.uturn.backward") {
-                        Task { await patch(f.id, ["clear_cover": true]) }
-                    }
-                }
-                Button("フォルダを削除", systemImage: "trash", role: .destructive) { deleteTarget = .folder(f) }
-            }
+            // ドラッグ中は元の場所(置かれる場所)を空白にする
+            .opacity(draggingFolder?.id == f.id ? 0 : (selecting ? 0.4 : 1))
+            .onDrag { startFolderDrag(f) }
+            .onDrop(of: [.text], delegate: ReorderDropDelegate<Folder>(target: f, list: $folders, dragging: $draggingFolder, onDrop: finishFolderDrag))
+            .contextMenu { folderMenu(f) }
         case .image(let index, let item):
             if selecting {
                 TileImage(imageId: item.imageId, side: side, crop: Crop(item))
@@ -258,17 +275,15 @@ struct FolderScreen: View {
                     }
             } else {
                 TileImage(imageId: item.imageId, side: side, crop: Crop(item))
+                    // ドラッグ中は元の場所(置かれる場所)を空白にする
+                    .opacity(draggingItem?.id == item.id ? 0 : 1)
                     .contentShape(Rectangle())
                     .onTapGesture { viewer = ViewerTarget(index: index) }
                     // 長押しでメニュー、長押しのまま指を動かすとドラッグで並べ替え(ホーム画面と同じ操作)
                     .onDrag {
-                        dragging = item
-                        return NSItemProvider(object: String(item.id) as NSString)
-                    } preview: {
-                        TileImage(imageId: item.imageId, side: side, crop: Crop(item))
-                            .frame(width: side, height: side)
+                        startDrag(item)
                     }
-                    .onDrop(of: [.text], delegate: ReorderDropDelegate(target: item, items: $items, dragging: $dragging, onCommit: commitMove))
+                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: item, list: $items, dragging: $draggingItem, onDrop: finishDrag))
                     .contextMenu { imageMenu(item) }
             }
         }
@@ -276,7 +291,7 @@ struct FolderScreen: View {
 
     @ViewBuilder
     private func imageMenu(_ item: Item) -> some View {
-        Button("表示位置を調整", systemImage: "crop") { cropTarget = item }
+        Button("表示位置を調整", systemImage: "crop") { cropTarget = .item(item) }
         if let fid = folderID {
             Button("このフォルダの表紙にする", systemImage: "photo.badge.checkmark") {
                 Task { await patch(fid, ["cover_image_id": item.imageId]) }
@@ -288,6 +303,106 @@ struct FolderScreen: View {
             }
         }
         Button("削除", systemImage: "trash", role: .destructive) { deleteTarget = .items([item.id]) }
+    }
+
+    @ViewBuilder
+    private func folderMenu(_ f: Folder) -> some View {
+        if f.coverImageId != nil {
+            Button("表紙の表示位置を調整", systemImage: "crop") { cropTarget = .folder(f) }
+        }
+        if f.coverIsCustom == true {
+            Button("表紙を自動に戻す", systemImage: "arrow.uturn.backward") {
+                Task { await patch(f.id, ["clear_cover": true]) }
+            }
+        }
+        Button("フォルダを削除", systemImage: "trash", role: .destructive) { deleteTarget = .folder(f) }
+    }
+
+    @ViewBuilder
+    private func cropEditor(_ target: CropTarget) -> some View {
+        switch target {
+        case .item(let item):
+            CropEditor(imageId: item.imageId, crop: Crop(item)) { crop in
+                try await API.shared.patchItem(item.id, crop: crop)
+            } onSaved: { crop in
+                if let i = items.firstIndex(where: { $0.id == item.id }) {
+                    items[i].cropX = crop.x
+                    items[i].cropY = crop.y
+                    items[i].cropZoom = crop.zoom
+                }
+            }
+        case .folder(let f):
+            if let cover = f.coverImageId {
+                CropEditor(imageId: cover, crop: Crop(cover: f)) { crop in
+                    _ = try await API.shared.patchFolder(f.id, ["cover_crop_x": crop.x, "cover_crop_y": crop.y, "cover_crop_zoom": crop.zoom])
+                } onSaved: { _ in
+                    Task { await load() }
+                }
+            }
+        }
+    }
+
+    // MARK: - 並べ替え
+
+    private func startDrag(_ item: Item) -> NSItemProvider {
+        let provider = DragEndProvider(object: String(item.id) as NSString)
+        let start = items.firstIndex(where: { $0.id == item.id })
+        provider.onEnd = { finishDrag() }
+        // 持ち上げた見た目が作られてから元の場所を空白にする(すでにドラッグが終わっていたら何もしない)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak provider] in
+            guard provider != nil else { return }
+            dragStartIndex = start
+            draggingItem = item
+        }
+        return provider
+    }
+
+    /// 置いたとき・取り消したときの両方で呼ばれる。並びが変わっていればサーバーに送る。
+    private func finishDrag() {
+        guard let item = draggingItem else { return }
+        draggingItem = nil
+        if let index = items.firstIndex(where: { $0.id == item.id }), index != dragStartIndex {
+            commitMove(item, index)
+        }
+        dragStartIndex = nil
+    }
+
+    private func startFolderDrag(_ f: Folder) -> NSItemProvider {
+        let provider = DragEndProvider(object: "folder-\(f.id)" as NSString)
+        let start = folders.firstIndex(where: { $0.id == f.id })
+        provider.onEnd = { finishFolderDrag() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak provider] in
+            guard provider != nil else { return }
+            dragStartIndex = start
+            draggingFolder = f
+        }
+        return provider
+    }
+
+    private func finishFolderDrag() {
+        guard let f = draggingFolder else { return }
+        draggingFolder = nil
+        if let index = folders.firstIndex(where: { $0.id == f.id }), index != dragStartIndex {
+            Task {
+                do {
+                    try await API.shared.moveFolder(f.id, toIndex: index)
+                    if let fid = folderID { current = try await API.shared.folder(fid) }
+                } catch {
+                    errorText = error.localizedDescription
+                    await load()
+                }
+            }
+        }
+        dragStartIndex = nil
+    }
+
+    private func sortFoldersByName() async {
+        do {
+            try await API.shared.sortChildren(parent: folderID, mode: "name")
+            await load()
+        } catch {
+            errorText = error.localizedDescription
+        }
     }
 
     // MARK: - 列数
@@ -420,19 +535,19 @@ struct FolderScreen: View {
     }
 }
 
-/// ドラッグ中のマスが別のマスに重なったら、その場で並びを入れ替える。指を離したら確定してサーバーに送る。
-struct ReorderDropDelegate: DropDelegate {
-    let target: Item?
-    @Binding var items: [Item]
-    @Binding var dragging: Item?
-    let onCommit: (Item, Int) -> Void
+/// ドラッグ中のマスが別のマスに重なったら、その場で並びを入れ替える。指を離したら確定する。
+struct ReorderDropDelegate<T: Identifiable>: DropDelegate where T.ID == Int {
+    let target: T?
+    @Binding var list: [T]
+    @Binding var dragging: T?
+    let onDrop: () -> Void
 
     func dropEntered(info: DropInfo) {
         guard let target, let d = dragging, d.id != target.id,
-              let from = items.firstIndex(where: { $0.id == d.id }),
-              let to = items.firstIndex(where: { $0.id == target.id }) else { return }
+              let from = list.firstIndex(where: { $0.id == d.id }),
+              let to = list.firstIndex(where: { $0.id == target.id }) else { return }
         withAnimation(.easeInOut(duration: 0.2)) {
-            items.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+            list.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
         }
     }
 
@@ -441,10 +556,7 @@ struct ReorderDropDelegate: DropDelegate {
     }
 
     func performDrop(info: DropInfo) -> Bool {
-        if let d = dragging, let index = items.firstIndex(where: { $0.id == d.id }) {
-            onCommit(d, index)
-        }
-        dragging = nil
+        onDrop()
         return true
     }
 }

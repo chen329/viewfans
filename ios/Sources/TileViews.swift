@@ -53,7 +53,7 @@ struct FolderTile: View {
 
     var body: some View {
         ZStack(alignment: .bottomLeading) {
-            TileImage(imageId: folder.coverImageId, side: side)
+            TileImage(imageId: folder.coverImageId, side: side, crop: Crop(cover: folder))
             LinearGradient(colors: [.clear, .black.opacity(0.8)], startPoint: .center, endPoint: .bottom)
             if side >= 64 {
                 VStack(alignment: .leading, spacing: 2) {

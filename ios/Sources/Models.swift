@@ -10,6 +10,10 @@ struct Folder: Codable, Identifiable, Hashable {
     var coverImageId: Int?
     var coverIsCustom: Bool?
     var sortMode: String?
+    var childSortMode: String?
+    var coverCropX: Double?
+    var coverCropY: Double?
+    var coverCropZoom: Double?
 }
 
 struct Item: Codable, Identifiable, Hashable {
@@ -62,6 +66,10 @@ struct Crop: Equatable {
 
     init(_ item: Item) {
         self.init(x: item.cropX, y: item.cropY, zoom: item.cropZoom ?? 1)
+    }
+
+    init(cover folder: Folder) {
+        self.init(x: folder.coverCropX ?? 0.5, y: folder.coverCropY ?? 0.5, zoom: folder.coverCropZoom ?? 1)
     }
 
     /// 枠(side × side)に画像を置くときの大きさと左上の位置。枠が必ず埋まるように中心をずらす。

@@ -167,6 +167,16 @@ final class API: @unchecked Sendable {
         return try decoder.decode(Folder.self, from: data)
     }
 
+    func moveFolder(_ id: Int, toIndex: Int) async throws {
+        _ = try await send(try request("/api/folders/\(id)/move", method: "POST", json: ["to_index": toIndex]))
+    }
+
+    func sortChildren(parent: Int?, mode: String) async throws {
+        var body: [String: Any] = ["mode": mode]
+        if let parent { body["parent_id"] = parent }
+        _ = try await send(try request("/api/folders/sort-children", method: "POST", json: body))
+    }
+
     func deleteItems(_ ids: [Int]) async throws {
         _ = try await send(try request("/api/items/delete", method: "POST", json: ["ids": ids]))
     }

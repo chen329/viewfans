@@ -2,7 +2,8 @@ import SwiftUI
 
 /// タイルに映る範囲の調整。枠の中で画像を指で動かし、ピンチで拡大率を変える。
 struct CropEditor: View {
-    let item: Item
+    let imageId: Int
+    let save: (Crop) async throws -> Void
     let onSaved: (Crop) -> Void
 
     @State private var crop: Crop
@@ -12,10 +13,11 @@ struct CropEditor: View {
     @State private var errorText: String?
     @Environment(\.dismiss) private var dismiss
 
-    init(item: Item, onSaved: @escaping (Crop) -> Void) {
-        self.item = item
+    init(imageId: Int, crop: Crop, save: @escaping (Crop) async throws -> Void, onSaved: @escaping (Crop) -> Void) {
+        self.imageId = imageId
+        self.save = save
         self.onSaved = onSaved
-        _crop = State(initialValue: Crop(item))
+        _crop = State(initialValue: crop)
     }
 
     var body: some View {
@@ -65,11 +67,11 @@ struct CropEditor: View {
                 Button("中央に戻す") { withAnimation { crop = Crop() } }
             }
             ToolbarItem(placement: .confirmationAction) {
-                Button("保存") { Task { await save() } }.disabled(saving)
+                Button("保存") { Task { await commit() } }.disabled(saving)
             }
         }
         .task {
-            image = await ImageStore.shared.image(id: item.imageId, variant: .medium, maxPixel: 1600)
+            image = await ImageStore.shared.image(id: imageId, variant: .medium, maxPixel: 1600)
         }
     }
 
@@ -104,11 +106,11 @@ struct CropEditor: View {
         min(max(v, half), 1 - half)
     }
 
-    private func save() async {
+    private func commit() async {
         saving = true
         defer { saving = false }
         do {
-            try await API.shared.patchItem(item.id, crop: crop)
+            try await save(crop)
             onSaved(crop)
             dismiss()
         } catch {

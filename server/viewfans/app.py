@@ -35,19 +35,20 @@ IMMUTABLE = {"Cache-Control": "private, max-age=31536000, immutable"}
 
 def folder_dict(c, row) -> dict:
     fid = row["id"]
-    count = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ?", (fid,)).fetchone()[0]
-    children = c.execute("SELECT COUNT(*) FROM folders WHERE parent_id = ?", (fid,)).fetchone()[0]
+    count = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ? AND deleted_at IS NULL", (fid,)).fetchone()[0]
+    children = c.execute("SELECT COUNT(*) FROM folders WHERE parent_id = ? AND deleted_at IS NULL", (fid,)).fetchone()[0]
     cover = (row["cover_image_id"],) if row["cover_image_id"] is not None else None
     if cover is None:
         cover = c.execute(
-            """SELECT image_id FROM items WHERE folder_id = ?
+            """SELECT image_id FROM items WHERE folder_id = ? AND deleted_at IS NULL
                ORDER BY position LIMIT 1""",
             (fid,),
         ).fetchone()
     if cover is None:
         cover = c.execute(
             """SELECT i.image_id FROM items i JOIN folders f ON f.id = i.folder_id
-               WHERE f.parent_id = ? ORDER BY f.position, i.position LIMIT 1""",
+               WHERE f.parent_id = ? AND f.deleted_at IS NULL AND i.deleted_at IS NULL
+               ORDER BY f.position, i.position LIMIT 1""",
             (fid,),
         ).fetchone()
     return {
@@ -166,10 +167,9 @@ def patch_folder(folder_id: int, body: FolderPatch, c=Depends(conn)):
 def delete_folder(folder_id: int, c=Depends(conn)):
     if c.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone() is None:
         raise HTTPException(404, "フォルダがありません")
-    gone = db.delete_folder(c, folder_id)
-    removed = _purge_images(c, gone)
+    db.trash_folder(c, folder_id)
     c.commit()
-    return {"deleted_images": removed}
+    return {"ok": True}
 
 
 class SortBody(BaseModel):
@@ -223,10 +223,120 @@ class DeleteItems(BaseModel):
 
 @app.post("/api/items/delete", dependencies=[Depends(auth)])
 def delete_items(body: DeleteItems, c=Depends(conn)):
-    gone = db.delete_items(c, body.ids)
-    removed = _purge_images(c, gone)
+    db.trash_items(c, body.ids)
+    c.commit()
+    return {"ok": True}
+
+
+# ---- 最近削除した項目 ----
+
+def _purge(c, folder_ids: list[int], item_ids: list[int]) -> int:
+    gone = db.purge_items(c, item_ids)
+    for fid in folder_ids:
+        gone += db.purge_folder(c, fid)
+    return _purge_images(c, sorted(set(gone)))
+
+
+@app.get("/api/trash", dependencies=[Depends(auth)])
+def get_trash(c=Depends(conn)):
+    old_folders, old_items = db.expired(c)
+    if old_folders or old_items:
+        _purge(c, old_folders, old_items)
+        c.commit()
+    folders, items = db.trash_contents(c)
+    out_folders = []
+    for f in folders:
+        n = c.execute(
+            """SELECT COUNT(*) FROM items WHERE folder_id = ?
+               OR folder_id IN (SELECT id FROM folders WHERE parent_id = ?)""", (f["id"], f["id"])).fetchone()[0]
+        cover = f["cover_image_id"] or (c.execute(
+            "SELECT image_id FROM items WHERE folder_id = ? ORDER BY position LIMIT 1", (f["id"],)).fetchone() or [None])[0]
+        out_folders.append({"id": f["id"], "name": f["name"], "parent_id": f["parent_id"],
+                            "item_count": n, "cover_image_id": cover, "deleted_at": f["deleted_at"]})
+    out_items = [{"id": i["id"], "image_id": i["image_id"], "folder_id": i["folder_id"],
+                  "folder_name": i["folder_name"], "original_name": i["original_name"],
+                  "width": i["width"], "height": i["height"], "deleted_at": i["deleted_at"]} for i in items]
+    return {"days": db.TRASH_DAYS, "folders": out_folders, "items": out_items}
+
+
+class TrashBody(BaseModel):
+    folder_ids: list[int] = []
+    item_ids: list[int] = []
+
+
+@app.post("/api/trash/restore", dependencies=[Depends(auth)])
+def restore_trash(body: TrashBody, c=Depends(conn)):
+    for fid in body.folder_ids:
+        db.restore_folder(c, fid)
+    db.restore_items(c, body.item_ids)
+    c.commit()
+    return {"ok": True}
+
+
+@app.post("/api/trash/purge", dependencies=[Depends(auth)])
+def purge_trash(body: TrashBody, c=Depends(conn)):
+    # 誤って使用中のものを消さないよう、最近削除した項目にあるものだけを対象にする
+    folders, items = db.trash_contents(c)
+    fids = [f["id"] for f in folders if f["id"] in set(body.folder_ids)]
+    iids = [i["id"] for i in items if i["id"] in set(body.item_ids)]
+    removed = _purge(c, fids, iids)
     c.commit()
     return {"deleted_images": removed}
+
+
+@app.post("/api/trash/empty", dependencies=[Depends(auth)])
+def empty_trash(c=Depends(conn)):
+    folders, items = db.trash_contents(c)
+    removed = _purge(c, [f["id"] for f in folders], [i["id"] for i in items])
+    c.commit()
+    return {"deleted_images": removed}
+
+
+# ---- 移動 ----
+
+class MoveItemsTo(BaseModel):
+    ids: list[int]
+    folder_id: int
+
+
+@app.post("/api/items/move-to", dependencies=[Depends(auth)])
+def move_items_to(body: MoveItemsTo, c=Depends(conn)):
+    try:
+        n = db.move_items_to(c, body.ids, body.folder_id)
+    except db.FolderError as e:
+        raise HTTPException(400, str(e))
+    c.commit()
+    return {"moved": n}
+
+
+class MoveFolderTo(BaseModel):
+    parent_id: int | None = None
+
+
+@app.post("/api/folders/{folder_id}/move-to", dependencies=[Depends(auth)])
+def move_folder_to(folder_id: int, body: MoveFolderTo, c=Depends(conn)):
+    try:
+        db.move_folder_to(c, folder_id, body.parent_id)
+    except db.FolderError as e:
+        raise HTTPException(400, str(e))
+    c.commit()
+    return get_folder(folder_id, c)
+
+
+# ---- 情報 ----
+
+@app.get("/api/stats", dependencies=[Depends(auth)])
+def stats(c=Depends(conn)):
+    usage = shutil.disk_usage(config.DATA_DIR)
+    return {
+        "images": c.execute("SELECT COUNT(*) FROM images").fetchone()[0],
+        "items": c.execute("SELECT COUNT(*) FROM items WHERE deleted_at IS NULL").fetchone()[0],
+        "folders": c.execute("SELECT COUNT(*) FROM folders WHERE deleted_at IS NULL").fetchone()[0],
+        "trash_items": c.execute("SELECT COUNT(*) FROM items WHERE deleted_at IS NOT NULL").fetchone()[0],
+        "originals_bytes": c.execute("SELECT COALESCE(SUM(bytes), 0) FROM images").fetchone()[0],
+        "disk_total": usage.total,
+        "disk_used": usage.used,
+    }
 
 
 def _purge_images(c, image_ids: list[int]) -> int:
@@ -248,12 +358,12 @@ def list_items(
     limit: int = Query(500, ge=1, le=5000),
     c=Depends(conn),
 ):
-    total = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ?", (folder_id,)).fetchone()[0]
+    total = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ? AND deleted_at IS NULL", (folder_id,)).fetchone()[0]
     rows = c.execute(
         """SELECT it.id, it.image_id, it.position, it.crop_x, it.crop_y, it.crop_zoom,
                   it.original_name, im.width, im.height, im.ext
            FROM items it JOIN images im ON im.id = it.image_id
-           WHERE it.folder_id = ? ORDER BY it.position LIMIT ? OFFSET ?""",
+           WHERE it.folder_id = ? AND it.deleted_at IS NULL ORDER BY it.position LIMIT ? OFFSET ?""",
         (folder_id, limit, offset),
     ).fetchall()
     return {"total": total, "offset": offset, "items": [dict(r) for r in rows]}

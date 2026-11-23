@@ -39,13 +39,59 @@ struct ItemsPage: Codable {
 enum Tile: Identifiable, Hashable {
     case folder(Folder)
     case image(index: Int, item: Item)
+    /// 最上位の最後に置く「最近削除した項目」
+    case trash(count: Int)
 
     var id: String {
         switch self {
         case .folder(let f): return "f\(f.id)"
         case .image(_, let it): return "i\(it.id)"
+        case .trash: return "trash"
         }
     }
+}
+
+struct TrashRoute: Hashable {}
+
+struct TrashFolder: Codable, Identifiable, Hashable {
+    let id: Int
+    let name: String
+    let parentId: Int?
+    let itemCount: Int
+    let coverImageId: Int?
+    let deletedAt: String
+}
+
+struct TrashItem: Codable, Identifiable, Hashable {
+    let id: Int
+    let imageId: Int
+    let folderId: Int
+    let folderName: String
+    let originalName: String?
+    let deletedAt: String
+}
+
+struct TrashContents: Codable {
+    let days: Int
+    let folders: [TrashFolder]
+    let items: [TrashItem]
+}
+
+struct ServerStats: Codable {
+    let images: Int
+    let items: Int
+    let folders: Int
+    let trashItems: Int
+    let originalsBytes: Int64
+    let diskTotal: Int64
+    let diskUsed: Int64
+}
+
+/// 削除日時から、完全に削除されるまでの残り日数
+func daysLeft(_ deletedAt: String, days: Int) -> Int {
+    guard let d = ISO8601DateFormatter().date(from: deletedAt) else { return days }
+    let passed = Int(Date().timeIntervalSince(d) / 86400)
+    return max(0, days - passed)
 }
 
 enum ImageVariant: String {

@@ -177,6 +177,35 @@ final class API: @unchecked Sendable {
         _ = try await send(try request("/api/folders/sort-children", method: "POST", json: body))
     }
 
+    func trash() async throws -> TrashContents {
+        try await get("/api/trash")
+    }
+
+    func restore(folders: [Int], items: [Int]) async throws {
+        _ = try await send(try request("/api/trash/restore", method: "POST", json: ["folder_ids": folders, "item_ids": items]))
+    }
+
+    func purge(folders: [Int], items: [Int]) async throws {
+        _ = try await send(try request("/api/trash/purge", method: "POST", json: ["folder_ids": folders, "item_ids": items]))
+    }
+
+    func emptyTrash() async throws {
+        _ = try await send(try request("/api/trash/empty", method: "POST"))
+    }
+
+    func moveItems(_ ids: [Int], to folder: Int) async throws {
+        _ = try await send(try request("/api/items/move-to", method: "POST", json: ["ids": ids, "folder_id": folder]))
+    }
+
+    func moveFolder(_ id: Int, toParent parent: Int?) async throws {
+        let body: [String: Any] = ["parent_id": parent.map { $0 as Any } ?? NSNull()]
+        _ = try await send(try request("/api/folders/\(id)/move-to", method: "POST", json: body))
+    }
+
+    func stats() async throws -> ServerStats {
+        try await get("/api/stats")
+    }
+
     func deleteItems(_ ids: [Int]) async throws {
         _ = try await send(try request("/api/items/delete", method: "POST", json: ["ids": ids]))
     }

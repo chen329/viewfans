@@ -1,7 +1,7 @@
 import hashlib
 import re
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from . import config
 
@@ -87,6 +87,8 @@ def init(conn: sqlite3.Connection) -> None:
     _add_column(conn, "folders", "cover_crop_x REAL NOT NULL DEFAULT 0.5")
     _add_column(conn, "folders", "cover_crop_y REAL NOT NULL DEFAULT 0.5")
     _add_column(conn, "folders", "cover_crop_zoom REAL NOT NULL DEFAULT 1.0")
+    _add_column(conn, "folders", "deleted_at TEXT")
+    _add_column(conn, "items", "deleted_at TEXT")
     if _add_column(conn, "folders", "sort_mode TEXT NOT NULL DEFAULT 'name'"):
         # 初回だけ、全フォルダをファイル名順に並べ直す
         for r in conn.execute("SELECT id FROM folders").fetchall():
@@ -131,9 +133,9 @@ def set_folder_sort_mode(conn, parent_id: int | None, mode: str) -> None:
 def ordered_folders(conn, parent_id: int | None) -> list:
     """フォルダの並び。初期状態は名前順、並べ替えたあとは手動の並び。"""
     if parent_id is None:
-        rows = conn.execute("SELECT * FROM folders WHERE parent_id IS NULL").fetchall()
+        rows = conn.execute("SELECT * FROM folders WHERE parent_id IS NULL AND deleted_at IS NULL").fetchall()
     else:
-        rows = conn.execute("SELECT * FROM folders WHERE parent_id = ?", (parent_id,)).fetchall()
+        rows = conn.execute("SELECT * FROM folders WHERE parent_id = ? AND deleted_at IS NULL", (parent_id,)).fetchall()
     if folder_sort_mode(conn, parent_id) == "name":
         return sorted(rows, key=lambda r: (natural_key(r["name"]), r["id"]))
     return sorted(rows, key=lambda r: (r["position"], natural_key(r["name"]), r["id"]))
@@ -158,7 +160,8 @@ def move_item(conn, item_id: int, to_index: int) -> int:
     if row is None:
         raise FolderError("画像がありません")
     fid = row["folder_id"]
-    ids = [r["id"] for r in conn.execute("SELECT id FROM items WHERE folder_id = ? ORDER BY position, id", (fid,))]
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id FROM items WHERE folder_id = ? AND deleted_at IS NULL ORDER BY position, id", (fid,))]
     ids.remove(item_id)
     to_index = max(0, min(to_index, len(ids)))
     ids.insert(to_index, item_id)
@@ -167,8 +170,8 @@ def move_item(conn, item_id: int, to_index: int) -> int:
     return fid
 
 
-def delete_items(conn, item_ids: list[int]) -> list[int]:
-    """フォルダから外す。どのフォルダからも参照されなくなった画像の ID を返す。"""
+def purge_items(conn, item_ids: list[int]) -> list[int]:
+    """完全に消す。どのフォルダからも参照されなくなった画像の ID を返す。"""
     if not item_ids:
         return []
     marks = ",".join("?" * len(item_ids))
@@ -177,8 +180,8 @@ def delete_items(conn, item_ids: list[int]) -> list[int]:
     return unreferenced(conn, image_ids)
 
 
-def delete_folder(conn, folder_id: int) -> list[int]:
-    """フォルダと子フォルダを消す。どこからも参照されなくなった画像の ID を返す。"""
+def purge_folder(conn, folder_id: int) -> list[int]:
+    """フォルダと子フォルダを完全に消す。どこからも参照されなくなった画像の ID を返す。"""
     image_ids = [r[0] for r in conn.execute(
         """SELECT DISTINCT image_id FROM items WHERE folder_id = ?
            OR folder_id IN (SELECT id FROM folders WHERE parent_id = ?)""",
@@ -189,6 +192,134 @@ def delete_folder(conn, folder_id: int) -> list[int]:
     conn.execute("DELETE FROM folders WHERE parent_id = ?", (folder_id,))
     conn.execute("DELETE FROM folders WHERE id = ?", (folder_id,))
     return unreferenced(conn, image_ids)
+
+
+# ---- 最近削除した項目 ----
+
+TRASH_DAYS = 30
+
+
+def trash_items(conn, item_ids: list[int]) -> None:
+    if not item_ids:
+        return
+    marks = ",".join("?" * len(item_ids))
+    conn.execute(f"UPDATE items SET deleted_at = ? WHERE id IN ({marks}) AND deleted_at IS NULL", [now(), *item_ids])
+
+
+def trash_folder(conn, folder_id: int) -> None:
+    t = now()
+    conn.execute("UPDATE folders SET deleted_at = ? WHERE (id = ? OR parent_id = ?) AND deleted_at IS NULL",
+                 (t, folder_id, folder_id))
+
+
+def _unique_name(conn, name: str, parent_id: int | None, exclude: int) -> str:
+    candidate, n = name, 1
+    while (row := find_folder(conn, candidate, parent_id)) is not None and row["id"] != exclude:
+        n += 1
+        candidate = f"{name} (復元{'' if n == 2 else n - 1})"
+    return candidate
+
+
+def _undelete_folder(conn, folder_id: int) -> None:
+    row = conn.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)).fetchone()
+    if row is None or row["deleted_at"] is None:
+        return
+    if row["parent_id"] is not None:
+        _undelete_folder(conn, row["parent_id"])
+    name = _unique_name(conn, row["name"], row["parent_id"], folder_id)
+    conn.execute("UPDATE folders SET deleted_at = NULL, name = ? WHERE id = ?", (name, folder_id))
+
+
+def restore_folder(conn, folder_id: int) -> None:
+    _undelete_folder(conn, folder_id)
+    for r in conn.execute("SELECT id FROM folders WHERE parent_id = ? AND deleted_at IS NOT NULL", (folder_id,)).fetchall():
+        _undelete_folder(conn, r["id"])
+
+
+def restore_items(conn, item_ids: list[int]) -> None:
+    for iid in item_ids:
+        row = conn.execute("SELECT folder_id FROM items WHERE id = ?", (iid,)).fetchone()
+        if row is None:
+            continue
+        _undelete_folder(conn, row["folder_id"])
+        conn.execute("UPDATE items SET deleted_at = NULL WHERE id = ?", (iid,))
+
+
+def trash_contents(conn):
+    """一番上の削除済みフォルダと、削除されていないフォルダの中の削除済み画像。"""
+    folders = conn.execute(
+        """SELECT f.* FROM folders f LEFT JOIN folders p ON p.id = f.parent_id
+           WHERE f.deleted_at IS NOT NULL AND (f.parent_id IS NULL OR p.deleted_at IS NULL)
+           ORDER BY f.deleted_at DESC"""
+    ).fetchall()
+    items = conn.execute(
+        """SELECT it.*, f.name AS folder_name, im.width, im.height, im.ext
+           FROM items it JOIN folders f ON f.id = it.folder_id JOIN images im ON im.id = it.image_id
+           WHERE it.deleted_at IS NOT NULL AND f.deleted_at IS NULL
+           ORDER BY it.deleted_at DESC, it.position"""
+    ).fetchall()
+    return folders, items
+
+
+def expired(conn) -> tuple[list[int], list[int]]:
+    """30日を過ぎたもの(フォルダ ID、画像の項目 ID)。"""
+    limit = (datetime.now(timezone.utc) - timedelta(days=TRASH_DAYS)).isoformat(timespec="seconds")
+    folders, items = trash_contents(conn)
+    return ([f["id"] for f in folders if f["deleted_at"] < limit],
+            [i["id"] for i in items if i["deleted_at"] < limit])
+
+
+# ---- 移動 ----
+
+def move_items_to(conn, item_ids: list[int], dest: int) -> int:
+    """画像を別のフォルダへ移す。移動先にすでに同じ画像があれば、移動元から外すだけ。移した数を返す。"""
+    target = conn.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (dest,)).fetchone()
+    if target is None:
+        raise FolderError("移動先のフォルダがありません")
+    pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM items WHERE folder_id = ?", (dest,)).fetchone()[0]
+    moved = 0
+    for iid in item_ids:
+        row = conn.execute("SELECT * FROM items WHERE id = ? AND deleted_at IS NULL", (iid,)).fetchone()
+        if row is None or row["folder_id"] == dest:
+            continue
+        dup = conn.execute("SELECT id, deleted_at FROM items WHERE folder_id = ? AND image_id = ?",
+                           (dest, row["image_id"])).fetchone()
+        if dup is not None:
+            conn.execute("UPDATE items SET deleted_at = NULL WHERE id = ?", (dup["id"],))
+            conn.execute("DELETE FROM items WHERE id = ?", (iid,))
+        else:
+            conn.execute("UPDATE items SET folder_id = ?, position = ? WHERE id = ?", (dest, pos, iid))
+            pos += 1
+        moved += 1
+    if target["sort_mode"] == "name":
+        renumber_by_name(conn, dest)
+    return moved
+
+
+def move_folder_to(conn, folder_id: int, parent_id: int | None) -> None:
+    row = conn.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (folder_id,)).fetchone()
+    if row is None:
+        raise FolderError("フォルダがありません")
+    if parent_id == folder_id:
+        raise FolderError("自分自身の中には移動できません")
+    if parent_id is not None:
+        parent = conn.execute("SELECT * FROM folders WHERE id = ? AND deleted_at IS NULL", (parent_id,)).fetchone()
+        if parent is None:
+            raise FolderError("移動先のフォルダがありません")
+        if parent["parent_id"] is not None:
+            raise FolderError("フォルダは2段までです")
+        has_children = conn.execute(
+            "SELECT 1 FROM folders WHERE parent_id = ? AND deleted_at IS NULL LIMIT 1", (folder_id,)).fetchone()
+        if has_children:
+            raise FolderError("子フォルダを持つフォルダは、ほかのフォルダの中に入れられません(2段まで)")
+    same = find_folder(conn, row["name"], parent_id)
+    if same is not None and same["id"] != folder_id:
+        raise FolderError("移動先に同じ名前のフォルダがあります")
+    if parent_id is None:
+        pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id IS NULL").fetchone()[0]
+    else:
+        pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM folders WHERE parent_id = ?", (parent_id,)).fetchone()[0]
+    conn.execute("UPDATE folders SET parent_id = ?, position = ? WHERE id = ?", (parent_id, pos, folder_id))
 
 
 def unreferenced(conn, image_ids: list[int]) -> list[int]:
@@ -205,10 +336,10 @@ class FolderError(Exception):
 def find_folder(conn, name: str, parent_id: int | None):
     if parent_id is None:
         return conn.execute(
-            "SELECT * FROM folders WHERE parent_id IS NULL AND name = ?", (name,)
+            "SELECT * FROM folders WHERE parent_id IS NULL AND name = ? AND deleted_at IS NULL", (name,)
         ).fetchone()
     return conn.execute(
-        "SELECT * FROM folders WHERE parent_id = ? AND name = ?", (parent_id, name)
+        "SELECT * FROM folders WHERE parent_id = ? AND name = ? AND deleted_at IS NULL", (parent_id, name)
     ).fetchone()
 
 
@@ -278,10 +409,14 @@ def add_item(conn, folder_id: int, image_id: int, original_name: str | None, ren
     """フォルダに追加する。ファイル名順のフォルダでは名前の位置に、手動並びのフォルダでは末尾に入る。
     同じ画像がすでにあれば None。renumber=False なら並べ直しは呼び出し側でまとめて行う。"""
     exists = conn.execute(
-        "SELECT id FROM items WHERE folder_id = ? AND image_id = ?", (folder_id, image_id)
+        "SELECT id, deleted_at FROM items WHERE folder_id = ? AND image_id = ?", (folder_id, image_id)
     ).fetchone()
     if exists is not None:
-        return None
+        if exists["deleted_at"] is None:
+            return None
+        # 最近削除した項目に入っていた同じ画像は、そのまま戻す
+        conn.execute("UPDATE items SET deleted_at = NULL WHERE id = ?", (exists["id"],))
+        return exists["id"]
     pos = conn.execute(
         "SELECT COALESCE(MAX(position), -1) + 1 FROM items WHERE folder_id = ?", (folder_id,)
     ).fetchone()[0]

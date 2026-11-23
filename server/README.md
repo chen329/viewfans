@@ -15,11 +15,18 @@ FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で
 | GET | /api/images/{id}/thumb | サムネイル(長辺 600px の JPEG) |
 | GET | /api/images/{id}/medium | 中間サイズ(長辺 1600px、初回要求時に生成) |
 | GET | /api/images/{id}/original | 元画像 |
-| DELETE | /api/folders/{id} | フォルダを子フォルダごと削除(参照されなくなった画像はファイルごと消す) |
+| DELETE | /api/folders/{id} | フォルダを子フォルダごと「最近削除した項目」へ |
 | POST | /api/folders/{id}/sort | 並び順の切り替え `{"mode": "name"}`(ファイル名順に並べ直す)/ `"manual"` |
 | PATCH | /api/items/{id} | 表示位置 `{"crop_x", "crop_y", "crop_zoom"}` |
 | POST | /api/items/{id}/move | 並べ替え `{"to_index"}`(フォルダは手動並びになる) |
-| POST | /api/items/delete | 画像をフォルダから削除 `{"ids": [...]}`(参照されなくなった画像はファイルごと消す) |
+| POST | /api/items/delete | 画像を「最近削除した項目」へ `{"ids": [...]}` |
+| GET | /api/trash | 最近削除した項目(30日を過ぎたものはこのとき完全に削除) |
+| POST | /api/trash/restore | 復元 `{"folder_ids": [], "item_ids": []}` |
+| POST | /api/trash/purge | 完全に削除 `{"folder_ids": [], "item_ids": []}`(参照されなくなった画像はファイルごと消す) |
+| POST | /api/trash/empty | 最近削除した項目をすべて完全に削除 |
+| POST | /api/items/move-to | 画像を別のフォルダへ移動 `{"ids": [], "folder_id"}` |
+| POST | /api/folders/{id}/move-to | フォルダを移動 `{"parent_id": null}`(2段まで) |
+| GET | /api/stats | 枚数・フォルダ数・ディスク使用量 |
 | POST | /api/folders/{id}/move | フォルダの並べ替え `{"to_index"}`(同じ階層は手動並びになる) |
 | POST | /api/folders/sort-children | フォルダの並びを名前順に戻す `{"parent_id": null, "mode": "name"}` |
 | PATCH | /api/folders/{id} | 名前変更 `{"name"}`、表紙設定 `{"cover_image_id"}`、表紙を自動に戻す `{"clear_cover": true}`、表紙の表示位置 `{"cover_crop_x", "cover_crop_y", "cover_crop_zoom"}` |

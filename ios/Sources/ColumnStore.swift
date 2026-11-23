@@ -10,7 +10,17 @@ enum ColumnStore {
 
     static func get(folder: Int?, landscape: Bool) -> Int {
         let v = UserDefaults.standard.integer(forKey: key(folder: folder, landscape: landscape))
-        return v == 0 ? (landscape ? 7 : 5) : min(max(v, range.lowerBound), range.upperBound)
+        return v == 0 ? defaultColumns(landscape: landscape) : min(max(v, range.lowerBound), range.upperBound)
+    }
+
+    /// 列数を変えたことのないフォルダで使う列数(設定画面で変更できる)
+    static func defaultColumns(landscape: Bool) -> Int {
+        let v = UserDefaults.standard.integer(forKey: "columns.default.\(landscape ? "landscape" : "portrait")")
+        return v == 0 ? (landscape ? 7 : 5) : v
+    }
+
+    static func setDefault(_ value: Int, landscape: Bool) {
+        UserDefaults.standard.set(value, forKey: "columns.default.\(landscape ? "landscape" : "portrait")")
     }
 
     static func set(_ value: Int, folder: Int?, landscape: Bool) {

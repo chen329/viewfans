@@ -36,6 +36,7 @@ struct RootView: View {
         NavigationStack(path: $path) {
             FolderScreen(folder: nil)
                 .navigationDestination(for: Folder.self) { FolderScreen(folder: $0) }
+                .navigationDestination(for: TrashRoute.self) { _ in TrashScreen() }
         }
     }
 }

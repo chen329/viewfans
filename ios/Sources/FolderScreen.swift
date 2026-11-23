@@ -78,6 +78,11 @@ struct FolderScreen: View {
     @State private var selected: Set<Int> = []
     @State private var deleteTarget: DeleteTarget?
     @State private var showNewFolder = false
+    @State private var moveTarget: MoveTarget?
+    @State private var trashCount = 0
+    /// スワイプでまとめて選択: 起点の画像、選択するか外すか、始める前の選択
+    @State private var swipe: (anchor: Int, select: Bool, base: Set<Int>)?
+    @State private var swipeRejected = false
     @State private var newFolderName = ""
 
     init(folder: Folder?) {
@@ -90,7 +95,8 @@ struct FolderScreen: View {
     private var canCreateFolder: Bool { folder == nil || folder?.parentId == nil }
 
     private var tiles: [Tile] {
-        folders.map { .folder($0) } + items.enumerated().map { .image(index: $0.offset, item: $0.element) }
+        let base = folders.map { Tile.folder($0) } + items.enumerated().map { Tile.image(index: $0.offset, item: $0.element) }
+        return folder == nil && loaded && errorText == nil ? base + [.trash(count: trashCount)] : base
     }
 
     var body: some View {
@@ -106,6 +112,8 @@ struct FolderScreen: View {
                         }
                     }
                     .scrollTargetLayout()
+                    .coordinateSpace(name: "grid")
+                    .simultaneousGesture(swipeSelect(side: side), including: selecting ? .all : .subviews)
                     // マスの外で指を離したときも、その時点の並びで確定する
                     .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: nil, list: $items, onEnter: activateItemDrag, onDrop: { finishDrag(activeToken) }))
                 }
@@ -171,15 +179,24 @@ struct FolderScreen: View {
         }
         .sheet(isPresented: $showConnection) {
             NavigationStack {
-                ConnectionSettingsView(isFirstRun: false) { Task { await load() } }
+                AppSettingsView { Task { await load() } }
+            }
+        }
+        .sheet(item: $moveTarget) { target in
+            NavigationStack {
+                MoveSheet(target: target) {
+                    selected = []
+                    selecting = false
+                    Task { await load() }
+                }
             }
         }
         .confirmationDialog(deleteTitle, isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
                             titleVisibility: .visible, presenting: deleteTarget) { target in
-            Button("完全に削除", role: .destructive) { Task { await performDelete(target) } }
+            Button("削除", role: .destructive) { Task { await performDelete(target) } }
             Button("キャンセル", role: .cancel) {}
         } message: { _ in
-            Text("サーバーからも消え、元に戻せません。ほかのフォルダにも入っている画像は、そちらには残ります。")
+            Text("「最近削除した項目」に移動します。30日後に完全に削除されます。")
         }
         .alert(folder == nil ? "新しいフォルダ" : "「\(current?.name ?? "")」の中に新しいフォルダ", isPresented: $showNewFolder) {
             TextField("名前", text: $newFolderName)
@@ -201,7 +218,12 @@ struct FolderScreen: View {
                     selected = selected.count == items.count ? [] : Set(items.map(\.id))
                 }
             }
-            ToolbarItem(placement: .bottomBar) {
+            ToolbarItemGroup(placement: .bottomBar) {
+                Button("移動", systemImage: "folder") {
+                    moveTarget = .items(items.filter { selected.contains($0.id) }.map(\.id))
+                }
+                .disabled(selected.isEmpty)
+                Spacer()
                 Button("削除", systemImage: "trash", role: .destructive) {
                     deleteTarget = .items(Array(selected))
                 }
@@ -232,7 +254,7 @@ struct FolderScreen: View {
                     if folder != nil {
                         Button("フォルダの設定", systemImage: "folder.badge.gearshape") { showFolderSettings = true }
                     } else {
-                        Button("接続設定", systemImage: "gearshape") { showConnection = true }
+                        Button("設定", systemImage: "gearshape") { showConnection = true }
                     }
                     Button("再読み込み", systemImage: "arrow.clockwise") { Task { await load() } }
                 } label: {
@@ -262,6 +284,12 @@ struct FolderScreen: View {
             .onDrag { startFolderDrag(f) }
             .onDrop(of: [.text], delegate: ReorderDropDelegate<Folder>(target: f, list: $folders, onEnter: activateFolderDrag, onDrop: { finishFolderDrag(activeToken) }))
             .contextMenu { folderMenu(f) }
+        case .trash(let count):
+            NavigationLink(value: TrashRoute()) {
+                TrashTile(count: count, side: side)
+            }
+            .buttonStyle(.plain)
+            .disabled(selecting)
         case .image(let index, let item):
             if selecting {
                 TileImage(imageId: item.imageId, side: side, crop: Crop(item))
@@ -307,6 +335,7 @@ struct FolderScreen: View {
                 Task { await patch(parent, ["cover_image_id": item.imageId]) }
             }
         }
+        Button("移動", systemImage: "folder") { moveTarget = .items([item.id]) }
         Button("削除", systemImage: "trash", role: .destructive) { deleteTarget = .items([item.id]) }
     }
 
@@ -320,6 +349,7 @@ struct FolderScreen: View {
                 Task { await patch(f.id, ["clear_cover": true]) }
             }
         }
+        Button("移動", systemImage: "folder") { moveTarget = .folder(f) }
         Button("フォルダを削除", systemImage: "trash", role: .destructive) { deleteTarget = .folder(f) }
     }
 
@@ -427,6 +457,46 @@ struct FolderScreen: View {
         }
     }
 
+    // MARK: - スワイプでまとめて選択
+
+    /// 選択モードで横にスワイプすると、起点から指の位置までをまとめて選択(起点が選択済みなら解除)する。
+    /// 縦の動きで始まった場合は通常のスクロールに任せる。
+    private func swipeSelect(side: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 12, coordinateSpace: .named("grid"))
+            .onChanged { v in
+                guard selecting else { return }
+                if swipe == nil {
+                    if swipeRejected { return }
+                    guard abs(v.translation.width) > abs(v.translation.height),
+                          let a = itemIndex(at: v.startLocation, side: side) else {
+                        swipeRejected = true
+                        return
+                    }
+                    swipe = (a, !selected.contains(items[a].id), selected)
+                }
+                guard let sw = swipe, let cur = itemIndex(at: v.location, side: side, clamp: true) else { return }
+                var next = sw.base
+                for i in min(sw.anchor, cur)...max(sw.anchor, cur) {
+                    if sw.select { next.insert(items[i].id) } else { next.remove(items[i].id) }
+                }
+                if next != selected { selected = next }
+            }
+            .onEnded { _ in
+                swipe = nil
+                swipeRejected = false
+            }
+    }
+
+    /// グリッド上の位置から画像の番号を求める(フォルダのマスは除く)。
+    private func itemIndex(at p: CGPoint, side: CGFloat, clamp: Bool = false) -> Int? {
+        guard !items.isEmpty else { return nil }
+        let col = min(max(Int(p.x / (side + 1)), 0), columns - 1)
+        let row = max(Int(p.y / (side + 1)), 0)
+        let i = row * columns + col - folders.count
+        if clamp { return min(max(i, 0), items.count - 1) }
+        return (0..<items.count).contains(i) ? i : nil
+    }
+
     // MARK: - 列数
 
     /// ピンチで1列ずつ増減する。指を広げると列が減り(大きく)、つまむと列が増える。
@@ -478,6 +548,7 @@ struct FolderScreen: View {
             }
             let newFolders = try await fs
             if newFolders != folders { folders = newFolders }
+            if folder == nil, let st = try? await API.shared.stats() { trashCount = st.trashItems }
         } catch is CancellationError {
             return
         } catch {

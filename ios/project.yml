@@ -22,14 +22,20 @@ targets:
         SWIFT_VERSION: "5.0"
         INFOPLIST_KEY_NSLocalNetworkUsageDescription: "自宅サーバーの画像を表示するために使います"
         INFOPLIST_KEY_CFBundleDisplayName: "View Fans"
+        INFOPLIST_KEY_NSPhotoLibraryUsageDescription: "送信した写真を写真アプリから削除するために使います"
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "5"
   ViewFansShare:
     type: app-extension
     platform: iOS
-    sources: [Share]
+    sources:
+      - Share
+      - Sources/API.swift
+      - Sources/Models.swift
+      - Sources/Upload.swift
+      - Sources/FolderPicker.swift
     entitlements:
       path: Share/ViewFansShare.entitlements
       properties:
@@ -49,5 +55,5 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.chen329.viewfans.share
         TARGETED_DEVICE_FAMILY: "2"
         SWIFT_VERSION: "5.0"
-        MARKETING_VERSION: "0.2.1"
-        CURRENT_PROJECT_VERSION: "4"
+        MARKETING_VERSION: "0.3.0"
+        CURRENT_PROJECT_VERSION: "5"

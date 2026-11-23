@@ -1,3 +1,4 @@
+import PhotosUI
 import SwiftUI
 
 struct ViewerTarget: Identifiable {
@@ -24,6 +25,9 @@ struct FolderScreen: View {
     @State private var showColumns = false
     @State private var showFolderSettings = false
     @State private var showConnection = false
+    @State private var showPhotoPicker = false
+    @State private var pickerItems: [PhotosPickerItem] = []
+    @State private var uploadJob: UploadJob?
 
     init(folder: Folder?) {
         self.folder = folder
@@ -76,6 +80,7 @@ struct FolderScreen: View {
                 Menu {
                     Button("列数を変更", systemImage: "square.grid.3x3") { showColumns = true }
                     if folder != nil {
+                        Button("写真から追加", systemImage: "photo.badge.plus") { showPhotoPicker = true }
                         Button("フォルダの設定", systemImage: "folder.badge.gearshape") { showFolderSettings = true }
                     } else {
                         Button("接続設定", systemImage: "gearshape") { showConnection = true }
@@ -103,6 +108,22 @@ struct FolderScreen: View {
                 NavigationStack {
                     FolderSettingsView(folder: current) { updated in self.current = updated }
                 }
+            }
+        }
+        .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItems, matching: .images, photoLibrary: .shared())
+        .onChange(of: pickerItems) { _, picked in
+            guard !picked.isEmpty, let fid = folderID else { return }
+            pickerItems = []
+            let job = UploadJob()
+            uploadJob = job
+            Task {
+                await job.run(folder: fid, count: picked.count) { i in try await PhotoImport.load(picked[i]) }
+                await load()
+            }
+        }
+        .sheet(item: $uploadJob) { job in
+            NavigationStack {
+                UploadProgressView(job: job, deleteFromPhotos: PhotoImport.deleteFromLibrary) { uploadJob = nil }
             }
         }
         .sheet(isPresented: $showConnection) {

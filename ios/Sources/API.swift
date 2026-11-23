@@ -104,6 +104,59 @@ final class API: @unchecked Sendable {
         return try decoder.decode(Folder.self, from: data)
     }
 
+    func createFolder(name: String, parent: Int?) async throws -> Folder {
+        var body: [String: Any] = ["name": name]
+        if let parent { body["parent_id"] = parent }
+        let data = try await send(try request("/api/folders", method: "POST", json: body))
+        return try decoder.decode(Folder.self, from: data)
+    }
+
+    struct UploadResult: Decodable {
+        let imageId: Int
+        let itemId: Int?
+        let duplicate: Bool
+    }
+
+    /// 画像を元のデータのまま送る。本文は一時ファイルに書いてから送り、メモリを使いすぎないようにする。
+    func upload(fileURL: URL, filename: String, folder: Int) async throws -> UploadResult {
+        let boundary = "viewfans-\(UUID().uuidString)"
+        let ext = (filename as NSString).pathExtension
+        let safeName = filename.allSatisfy { $0.isASCII && $0 != "\"" } ? filename : "image.\(ext.isEmpty ? "jpg" : ext)"
+        let bodyURL = FileManager.default.temporaryDirectory.appendingPathComponent("body-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: bodyURL) }
+
+        FileManager.default.createFile(atPath: bodyURL.path, contents: nil)
+        let out = try FileHandle(forWritingTo: bodyURL)
+        do {
+            try out.write(contentsOf: Data((
+                "--\(boundary)\r\n" +
+                "Content-Disposition: form-data; name=\"file\"; filename=\"\(safeName)\"\r\n" +
+                "Content-Type: application/octet-stream\r\n\r\n"
+            ).utf8))
+            let input = try FileHandle(forReadingFrom: fileURL)
+            defer { try? input.close() }
+            while let chunk = try input.read(upToCount: 1 << 20), !chunk.isEmpty {
+                try out.write(contentsOf: chunk)
+            }
+            try out.write(contentsOf: Data("\r\n--\(boundary)--\r\n".utf8))
+            try out.close()
+        } catch {
+            try? out.close()
+            throw error
+        }
+
+        var req = try request("/api/folders/\(folder)/items", method: "POST")
+        req.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.timeoutInterval = 300
+        let (data, resp) = try await session.upload(for: req, fromFile: bodyURL)
+        guard let http = resp as? HTTPURLResponse else { throw APIError(message: "応答が不正です") }
+        guard (200..<300).contains(http.statusCode) else {
+            let msg = (try? JSONDecoder().decode(Detail.self, from: data))?.detail ?? "HTTP \(http.statusCode)"
+            throw APIError(message: msg)
+        }
+        return try decoder.decode(UploadResult.self, from: data)
+    }
+
     func imageData(_ imageId: Int, variant: ImageVariant) async throws -> Data {
         try await send(try request("/api/images/\(imageId)/\(variant.rawValue)"))
     }

@@ -25,6 +25,9 @@ def main(argv=None) -> int:
     p_imp.add_argument("--dry-run", action="store_true", help="取り込まずにフォルダごとの枚数だけ表示")
     p_imp.add_argument("--workers", type=int, default=4)
 
+    p_med = sub.add_parser("medium", help="中間サイズ(長辺1600px)をまだ無い画像ぶん作る")
+    p_med.add_argument("--workers", type=int, default=4)
+
     p_tok = sub.add_parser("token", help="端末トークンの管理")
     tsub = p_tok.add_subparsers(dest="tcmd", required=True)
     t_create = tsub.add_parser("create")
@@ -37,6 +40,8 @@ def main(argv=None) -> int:
 
     if a.cmd == "import":
         return importer.run(a.root, workers=a.workers, dry_run=a.dry_run)
+    if a.cmd == "medium":
+        return make_all_medium(a.workers)
 
     conn = db.connect()
     db.init(conn)
@@ -59,6 +64,28 @@ def main(argv=None) -> int:
         conn.commit()
         print(f"{n} 件削除しました")
     return 0
+
+
+def make_all_medium(workers: int) -> int:
+    from concurrent.futures import ProcessPoolExecutor
+
+    from . import storage
+
+    conn = db.connect()
+    db.init(conn)
+    rows = [(r["sha256"], r["ext"]) for r in conn.execute("SELECT sha256, ext FROM images ORDER BY id")]
+    todo = [r for r in rows if not storage.medium_path(r[0]).exists()]
+    print(f"全 {len(rows)} 枚、作成するもの {len(todo)} 枚")
+    failed = 0
+    with ProcessPoolExecutor(max_workers=workers) as ex:
+        for i, err in enumerate(ex.map(storage.medium_job, todo, chunksize=16), 1):
+            if err:
+                failed += 1
+                print(f"  失敗: {err}", file=sys.stderr)
+            if i % 500 == 0:
+                print(f"  {i}/{len(todo)}")
+    print(f"作成 {len(todo) - failed} 枚、失敗 {failed} 枚")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

@@ -175,9 +175,12 @@ def hash_token(token: str) -> str:
 
 def check_token(conn, token: str) -> bool:
     h = hash_token(token)
-    row = conn.execute("SELECT id FROM tokens WHERE token_hash = ?", (h,)).fetchone()
+    row = conn.execute("SELECT id, last_used_at FROM tokens WHERE token_hash = ?", (h,)).fetchone()
     if row is None:
         return False
-    conn.execute("UPDATE tokens SET last_used_at = ? WHERE id = ?", (now(), row["id"]))
-    conn.commit()
+    # 画像1枚ごとに HDD へ書き込まないよう、最終使用日時の更新は1分に1回まで
+    last = row["last_used_at"]
+    if last is None or (datetime.now(timezone.utc) - datetime.fromisoformat(last)).total_seconds() >= 60:
+        conn.execute("UPDATE tokens SET last_used_at = ? WHERE id = ?", (now(), row["id"]))
+        conn.commit()
     return True

@@ -22,6 +22,7 @@ FastAPI + SQLite。データは `/srv/viewfans`(環境変数 `VIEWFANS_DATA` で
 ```
 viewfans init
 viewfans import <取り込み元> [--dry-run] [--workers 4]
+viewfans medium [--workers 4]
 viewfans token create <名前>
 viewfans token list
 viewfans token revoke <名前>

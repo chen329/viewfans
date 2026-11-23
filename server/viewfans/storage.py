@@ -79,6 +79,16 @@ def ensure_medium(sha: str, ext: str) -> Path:
     return dst
 
 
+def medium_job(args: tuple[str, str]) -> str | None:
+    """一括生成用。失敗したらエラー文を返す。"""
+    sha, ext = args
+    try:
+        ensure_medium(sha, ext)
+        return None
+    except Exception as e:
+        return f"{sha}: {type(e).__name__}: {e}"
+
+
 def _real_size(src: Path) -> tuple[int, int]:
     with Image.open(src) as im:
         w, h = im.size
@@ -123,6 +133,7 @@ def process_file(src: str) -> dict:
         thumb = thumb_path(sha)
         width, height = make_thumb(path, thumb) if not thumb.exists() else _real_size(path)
         store_original(path, sha, ext)
+        ensure_medium(sha, ext)
         return {
             "src": src,
             "sha256": sha,

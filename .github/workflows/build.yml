@@ -1,0 +1,23 @@
+name: build
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - run: |
+          xcodebuild -project TileView.xcodeproj -scheme TileView \
+            -sdk iphoneos -configuration Release -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
+      - run: |
+          mkdir Payload
+          cp -R build/Build/Products/Release-iphoneos/TileView.app Payload/
+          zip -r TileView.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TileView-ipa
+          path: TileView.ipa

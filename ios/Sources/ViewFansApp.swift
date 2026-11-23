@@ -1,10 +1,10 @@
 import SwiftUI
 
 @main
-struct TileViewApp: App {
+struct ViewFansApp: App {
     var body: some Scene {
         WindowGroup {
-            Text("TileView M0")
+            Text("View Fans")
         }
     }
 }

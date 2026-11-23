@@ -1,23 +1,29 @@
-name: build
+name: ios
 on:
   push:
+    paths:
+      - "ios/**"
+      - ".github/workflows/ios.yml"
   workflow_dispatch:
 jobs:
   build:
     runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
     steps:
       - uses: actions/checkout@v4
       - run: brew install xcodegen
       - run: xcodegen generate
       - run: |
-          xcodebuild -project TileView.xcodeproj -scheme TileView \
+          xcodebuild -project ViewFans.xcodeproj -scheme ViewFans \
             -sdk iphoneos -configuration Release -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build
       - run: |
           mkdir Payload
-          cp -R build/Build/Products/Release-iphoneos/TileView.app Payload/
-          zip -r TileView.ipa Payload
+          cp -R build/Build/Products/Release-iphoneos/ViewFans.app Payload/
+          zip -r ViewFans.ipa Payload
       - uses: actions/upload-artifact@v4
         with:
-          name: TileView-ipa
-          path: TileView.ipa
+          name: ViewFans-ipa
+          path: ios/ViewFans.ipa

@@ -66,8 +66,12 @@ struct FolderScreen: View {
     @State private var pickerItems: [PhotosPickerItem] = []
     @State private var uploadJob: UploadJob?
 
+    /// 長押しで候補になり、実際に指が動いてドラッグが始まった時点で確定する
+    @State private var pendingItem: (item: Item, token: UUID)?
+    @State private var pendingFolder: (folder: Folder, token: UUID)?
     @State private var draggingItem: Item?
     @State private var draggingFolder: Folder?
+    @State private var activeToken: UUID?
     @State private var dragStartIndex: Int?
     @State private var cropTarget: CropTarget?
     @State private var selecting = false
@@ -103,7 +107,7 @@ struct FolderScreen: View {
                     }
                     .scrollTargetLayout()
                     // マスの外で指を離したときも、その時点の並びで確定する
-                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: nil, list: $items, dragging: $draggingItem, onDrop: finishDrag))
+                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: nil, list: $items, onEnter: activateItemDrag, onDrop: { finishDrag(activeToken) }))
                 }
                 .scrollPosition(id: $topID, anchor: .top)
                 .simultaneousGesture(pinch)
@@ -130,6 +134,7 @@ struct FolderScreen: View {
         .task {
             draggingItem = nil
             draggingFolder = nil
+            activeToken = nil
             await load()
         }
         .onChange(of: columns) { _, value in
@@ -255,7 +260,7 @@ struct FolderScreen: View {
             // ドラッグ中は元の場所(置かれる場所)を空白にする
             .opacity(draggingFolder?.id == f.id ? 0 : (selecting ? 0.4 : 1))
             .onDrag { startFolderDrag(f) }
-            .onDrop(of: [.text], delegate: ReorderDropDelegate<Folder>(target: f, list: $folders, dragging: $draggingFolder, onDrop: finishFolderDrag))
+            .onDrop(of: [.text], delegate: ReorderDropDelegate<Folder>(target: f, list: $folders, onEnter: activateFolderDrag, onDrop: { finishFolderDrag(activeToken) }))
             .contextMenu { folderMenu(f) }
         case .image(let index, let item):
             if selecting {
@@ -283,7 +288,7 @@ struct FolderScreen: View {
                     .onDrag {
                         startDrag(item)
                     }
-                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: item, list: $items, dragging: $draggingItem, onDrop: finishDrag))
+                    .onDrop(of: [.text], delegate: ReorderDropDelegate<Item>(target: item, list: $items, onEnter: activateItemDrag, onDrop: { finishDrag(activeToken) }))
                     .contextMenu { imageMenu(item) }
             }
         }
@@ -344,23 +349,32 @@ struct FolderScreen: View {
 
     // MARK: - 並べ替え
 
+    /// 長押しの時点では見た目を変えない(メニューだけ出して離した場合に空白が残らないように)。
     private func startDrag(_ item: Item) -> NSItemProvider {
+        let token = UUID()
+        pendingItem = (item, token)
         let provider = DragEndProvider(object: String(item.id) as NSString)
-        let start = items.firstIndex(where: { $0.id == item.id })
-        provider.onEnd = { finishDrag() }
-        // 持ち上げた見た目が作られてから元の場所を空白にする(すでにドラッグが終わっていたら何もしない)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak provider] in
-            guard provider != nil else { return }
-            dragStartIndex = start
-            draggingItem = item
-        }
+        provider.onEnd = { finishDrag(token) }
         return provider
     }
 
-    /// 置いたとき・取り消したときの両方で呼ばれる。並びが変わっていればサーバーに送る。
-    private func finishDrag() {
-        guard let item = draggingItem else { return }
+    /// 指が動いてマスの上に入った時点でドラッグを確定し、元の場所を空白にする。
+    private func activateItemDrag() -> Item? {
+        if let d = draggingItem { return d }
+        guard let p = pendingItem else { return nil }
+        pendingItem = nil
+        activeToken = p.token
+        dragStartIndex = items.firstIndex(where: { $0.id == p.item.id })
+        draggingItem = p.item
+        return p.item
+    }
+
+    /// 置いたとき・取り消したときに呼ばれる。別のドラッグの終了通知は無視する。並びが変わっていればサーバーに送る。
+    private func finishDrag(_ token: UUID?) {
+        if pendingItem?.token == token { pendingItem = nil }
+        guard let token, token == activeToken, let item = draggingItem else { return }
         draggingItem = nil
+        activeToken = nil
         if let index = items.firstIndex(where: { $0.id == item.id }), index != dragStartIndex {
             commitMove(item, index)
         }
@@ -368,20 +382,28 @@ struct FolderScreen: View {
     }
 
     private func startFolderDrag(_ f: Folder) -> NSItemProvider {
+        let token = UUID()
+        pendingFolder = (f, token)
         let provider = DragEndProvider(object: "folder-\(f.id)" as NSString)
-        let start = folders.firstIndex(where: { $0.id == f.id })
-        provider.onEnd = { finishFolderDrag() }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak provider] in
-            guard provider != nil else { return }
-            dragStartIndex = start
-            draggingFolder = f
-        }
+        provider.onEnd = { finishFolderDrag(token) }
         return provider
     }
 
-    private func finishFolderDrag() {
-        guard let f = draggingFolder else { return }
+    private func activateFolderDrag() -> Folder? {
+        if let d = draggingFolder { return d }
+        guard let p = pendingFolder else { return nil }
+        pendingFolder = nil
+        activeToken = p.token
+        dragStartIndex = folders.firstIndex(where: { $0.id == p.folder.id })
+        draggingFolder = p.folder
+        return p.folder
+    }
+
+    private func finishFolderDrag(_ token: UUID?) {
+        if pendingFolder?.token == token { pendingFolder = nil }
+        guard let token, token == activeToken, let f = draggingFolder else { return }
         draggingFolder = nil
+        activeToken = nil
         if let index = folders.firstIndex(where: { $0.id == f.id }), index != dragStartIndex {
             Task {
                 do {
@@ -539,11 +561,12 @@ struct FolderScreen: View {
 struct ReorderDropDelegate<T: Identifiable>: DropDelegate where T.ID == Int {
     let target: T?
     @Binding var list: [T]
-    @Binding var dragging: T?
+    /// ドラッグを確定して、ドラッグ中の要素を返す(このグリッドのドラッグでなければ nil)
+    let onEnter: () -> T?
     let onDrop: () -> Void
 
     func dropEntered(info: DropInfo) {
-        guard let target, let d = dragging, d.id != target.id,
+        guard let d = onEnter(), let target, d.id != target.id,
               let from = list.firstIndex(where: { $0.id == d.id }),
               let to = list.firstIndex(where: { $0.id == target.id }) else { return }
         withAnimation(.easeInOut(duration: 0.2)) {

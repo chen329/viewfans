@@ -39,15 +39,20 @@ def thumb_path(sha: str) -> Path:
     return shard(config.THUMBS_DIR, sha, "jpg")
 
 
+def medium_path(sha: str) -> Path:
+    return shard(config.MEDIUM_DIR, sha, "jpg")
+
+
 def normalize_ext(name: str) -> str | None:
     ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
     return config.SUPPORTED_EXT.get(ext)
 
 
-def make_thumb(src: Path, dst: Path) -> tuple[int, int]:
-    """サムネイルを作り、向きを補正した元画像の幅・高さを返す。"""
+def make_thumb(src: Path, dst: Path, long_edge: int = config.THUMB_LONG_EDGE,
+               quality: int = config.THUMB_QUALITY) -> tuple[int, int]:
+    """縮小版を作り、向きを補正した元画像の幅・高さを返す。"""
     with Image.open(src) as im:
-        im.draft("RGB", (config.THUMB_LONG_EDGE * 2, config.THUMB_LONG_EDGE * 2))
+        im.draft("RGB", (long_edge * 2, long_edge * 2))
         im = ImageOps.exif_transpose(im)
         # draft で縮小されることがあるので、元の大きさは別に取り直す
         width, height = _real_size(src)
@@ -58,12 +63,20 @@ def make_thumb(src: Path, dst: Path) -> tuple[int, int]:
             im = bg
         else:
             im = im.convert("RGB")
-        im.thumbnail((config.THUMB_LONG_EDGE, config.THUMB_LONG_EDGE), Image.LANCZOS)
+        im.thumbnail((long_edge, long_edge), Image.LANCZOS)
         dst.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dst.with_suffix(".tmp")
-        im.save(tmp, "JPEG", quality=config.THUMB_QUALITY, optimize=True)
+        tmp = dst.with_name(f"{dst.stem}.{os.getpid()}.tmp")
+        im.save(tmp, "JPEG", quality=quality, optimize=True)
         os.replace(tmp, dst)
     return width, height
+
+
+def ensure_medium(sha: str, ext: str) -> Path:
+    """中間サイズ(長辺1600px)を初回の要求時に作る。"""
+    dst = medium_path(sha)
+    if not dst.exists():
+        make_thumb(original_path(sha, ext), dst, config.MEDIUM_LONG_EDGE, config.MEDIUM_QUALITY)
+    return dst
 
 
 def _real_size(src: Path) -> tuple[int, int]:

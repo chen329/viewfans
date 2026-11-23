@@ -37,11 +37,13 @@ def folder_dict(c, row) -> dict:
     fid = row["id"]
     count = c.execute("SELECT COUNT(*) FROM items WHERE folder_id = ?", (fid,)).fetchone()[0]
     children = c.execute("SELECT COUNT(*) FROM folders WHERE parent_id = ?", (fid,)).fetchone()[0]
-    cover = c.execute(
-        """SELECT image_id FROM items WHERE folder_id = ?
-           ORDER BY position LIMIT 1""",
-        (fid,),
-    ).fetchone()
+    cover = (row["cover_image_id"],) if row["cover_image_id"] is not None else None
+    if cover is None:
+        cover = c.execute(
+            """SELECT image_id FROM items WHERE folder_id = ?
+               ORDER BY position LIMIT 1""",
+            (fid,),
+        ).fetchone()
     if cover is None:
         cover = c.execute(
             """SELECT i.image_id FROM items i JOIN folders f ON f.id = i.folder_id
@@ -56,6 +58,7 @@ def folder_dict(c, row) -> dict:
         "item_count": count,
         "child_count": children,
         "cover_image_id": cover[0] if cover else None,
+        "cover_is_custom": row["cover_image_id"] is not None,
     }
 
 
@@ -96,6 +99,30 @@ def create_folder(body: NewFolder, c=Depends(conn)):
     return get_folder(fid, c)
 
 
+class FolderPatch(BaseModel):
+    name: str | None = None
+    cover_image_id: int | None = None
+    clear_cover: bool = False
+
+
+@app.patch("/api/folders/{folder_id}", dependencies=[Depends(auth)])
+def patch_folder(folder_id: int, body: FolderPatch, c=Depends(conn)):
+    if c.execute("SELECT 1 FROM folders WHERE id = ?", (folder_id,)).fetchone() is None:
+        raise HTTPException(404, "フォルダがありません")
+    try:
+        if body.name is not None:
+            db.rename_folder(c, folder_id, body.name)
+    except db.FolderError as e:
+        raise HTTPException(400, str(e))
+    if body.clear_cover:
+        c.execute("UPDATE folders SET cover_image_id = NULL WHERE id = ?", (folder_id,))
+    elif body.cover_image_id is not None:
+        _image(c, body.cover_image_id)
+        c.execute("UPDATE folders SET cover_image_id = ? WHERE id = ?", (body.cover_image_id, folder_id))
+    c.commit()
+    return get_folder(folder_id, c)
+
+
 @app.get("/api/folders/{folder_id}/items", dependencies=[Depends(auth)])
 def list_items(
     folder_id: int,
@@ -125,6 +152,13 @@ def _image(c, image_id: int):
 def get_thumb(image_id: int, c=Depends(conn)):
     row = _image(c, image_id)
     return FileResponse(storage.thumb_path(row["sha256"]), media_type="image/jpeg", headers=IMMUTABLE)
+
+
+@app.get("/api/images/{image_id}/medium", dependencies=[Depends(auth)])
+def get_medium(image_id: int, c=Depends(conn)):
+    row = _image(c, image_id)
+    path = storage.ensure_medium(row["sha256"], row["ext"])
+    return FileResponse(path, media_type="image/jpeg", headers=IMMUTABLE)
 
 
 @app.get("/api/images/{image_id}/original", dependencies=[Depends(auth)])

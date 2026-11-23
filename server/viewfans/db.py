@@ -63,6 +63,12 @@ def connect() -> sqlite3.Connection:
 
 def init(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(folders)")}
+    if "cover_image_id" not in cols:
+        try:
+            conn.execute("ALTER TABLE folders ADD COLUMN cover_image_id INTEGER REFERENCES images(id) ON DELETE SET NULL")
+        except sqlite3.OperationalError:  # 別のワーカーが先に追加した場合
+            pass
     conn.commit()
 
 
@@ -108,6 +114,19 @@ def create_folder(conn, name: str, parent_id: int | None) -> int:
         (parent_id, name, pos, now()),
     )
     return cur.lastrowid
+
+
+def rename_folder(conn, folder_id: int, name: str) -> None:
+    name = name.strip()
+    if not name:
+        raise FolderError("フォルダ名が空です")
+    row = conn.execute("SELECT * FROM folders WHERE id = ?", (folder_id,)).fetchone()
+    if row is None:
+        raise FolderError("フォルダがありません")
+    other = find_folder(conn, name, row["parent_id"])
+    if other is not None and other["id"] != folder_id:
+        raise FolderError("同じ名前のフォルダがあります")
+    conn.execute("UPDATE folders SET name = ? WHERE id = ?", (name, folder_id))
 
 
 def get_or_create_folder(conn, name: str, parent_id: int | None) -> int:

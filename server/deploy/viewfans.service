@@ -1,0 +1,20 @@
+[Unit]
+Description=View Fans server
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/srv/viewfans
+
+[Service]
+User=viewfans
+Group=viewfans
+Environment=VIEWFANS_DATA=/srv/viewfans
+ExecStart=/opt/viewfans/venv/bin/uvicorn viewfans.app:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=on-failure
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/srv/viewfans
+
+[Install]
+WantedBy=multi-user.target
